@@ -21,7 +21,7 @@ def _classify_binding(name, is_spawnable):
     name_lower = name_text.lower()
     norm = re.sub(r"[^0-9a-z\s]", " ", name_lower)
 
-    camera_tokens = ("camera", "cam", "sensor", "focal", "focus", "aperture", "filmback", "film back", "lens", "focal length")
+    camera_tokens = ("camera", "cam", "sensor", "focal", "focus", "aperture", "filmback", "film back", "lens", "focal length", "kam")
     face_tokens = ("face", "blendshape", "blend shape", "blend", "morph", "jaw", "eye", "eyebrow", "lip", "mouth")
     body_tokens = ("body", "bone", "skeleton", "metahuman", "mesh", "character", "spine", "hip", "chest")
     control_tokens = ("controlrig", "control rig", "rig")
@@ -317,7 +317,9 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
 
     def confirm():
         result["cancelled"] = False
-        result["binding_ids"] = {binding_id for _, (var, name, binding_id) in binding_vars.items() if var.get()}
+        # Filter out empty/falsy binding IDs to avoid the empty-string collision
+        # bug where multiple bindings without a usable binding_id all match "".
+        result["binding_ids"] = {binding_id for _, (var, name, binding_id) in binding_vars.items() if var.get() and binding_id}
         result["binding_names"] = {name for _, (var, name, binding_id) in binding_vars.items() if var.get()}
         result["track_names"] = {name for _, name in track_vars.values() if _.get()}
         result["merge_body_face"] = bool(merge_var.get() and merge_checkbox.cget("state") != "disabled")

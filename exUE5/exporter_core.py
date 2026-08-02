@@ -19,6 +19,7 @@ try:
         _format_binding_id,
         _filter_sequence_items,
         _warn_about_spawnable_export_bug,
+        _get_spawnable_binding_ids,
         _apply_spawnable_auto_fix_if_needed,
         _remove_spawnable_auto_fix,
     )
@@ -540,12 +541,32 @@ def _filter_by_explicit_selection(items, selected, get_display_name_fn=_get_disp
     item_names = [get_display_name_fn(item) for item in items]
     item_ids = [get_binding_id_fn(item) for item in items]
 
-    # Match if either the stable id or the display name is present in the
-    # selection set. This keeps backward compatibility with older callers
-    # that still supply display-name based selections.
-    filtered = [item for item in items if (get_binding_id_fn(item) in selected) or (get_display_name_fn(item) in selected)]
-    filtered_names = [get_display_name_fn(item) for item in filtered]
-    filtered_ids = [get_binding_id_fn(item) for item in filtered]
+    # Detect items that have empty/unusable binding ids and warn so user
+    # sees which bindings cannot be reliably matched by stable id.
+    empty_id_items = [it for it, iid in zip(items, item_ids) if not iid]
+    if empty_id_items:
+        try:
+            _log(
+                "[exUE5][WARNING] "
+                f"{len(empty_id_items)} binding(s) nie mają rozpoznawalnego binding_id "
+                f"(prawdopodobnie Spawnable z inną strukturą proxy): "
+                f"{[get_display_name_fn(it) for it in empty_id_items]}. "
+                "Te bindingi NIE będą dopasowywane po ID (tylko po nazwie), "
+                "aby uniknąć kolizji z innymi obiektami o pustym ID."
+            )
+        except Exception:
+            pass
+
+    def _matches(item, iid):
+        # Match by ID only if the ID is non-empty/truthy to avoid the
+        # empty-string collision described in the bug report. Fall back to
+        # display-name matching for legacy selections.
+        if iid:
+            if iid in selected:
+                return True
+        return get_display_name_fn(item) in selected
+
+    filtered = [item for item, iid in zip(items, item_ids) if _matches(item, iid)]
 
     try:
         sel_sorted = sorted(selected)
@@ -555,7 +576,7 @@ def _filter_by_explicit_selection(items, selected, get_display_name_fn=_get_disp
     _log(
         f"_filter_by_explicit_selection -> selected={sel_sorted} | "
         f"items_before={item_names} | item_ids_before={item_ids} | "
-        f"items_after={filtered_names} | item_ids_after={filtered_ids}"
+        f"items_after={[get_display_name_fn(i) for i in filtered]}"
     )
     return filtered
 
@@ -571,6 +592,54 @@ def _binding_matches_name(binding, needle_tokens):
         return False
     lowered = str(display_name).lower()
     return any(token in lowered for token in needle_tokens)
+
+
+def _binding_has_any_tracks(binding):
+    """Return True if the binding contains any track/section/channel keys
+    that would produce exported data (transform keys, animation keys, etc.).
+    This is a conservative probe used to warn about bindings that are
+    present in the selection but have no actionable data and may export
+    as empty placeholders.
+    """
+    try:
+        # Obtain tracks if possible
+        tracks = []
+        if hasattr(binding, 'get_tracks'):
+            try:
+                tracks = list(binding.get_tracks())
+            except Exception:
+                tracks = []
+
+        if not tracks:
+            return False
+
+        for track in tracks:
+            try:
+                # Inspect sections -> channels -> keys
+                sections = list(track.get_sections()) if hasattr(track, 'get_sections') else []
+                for section in sections:
+                    channels = list(section.get_channels()) if hasattr(section, 'get_channels') else []
+                    for channel in channels:
+                        keys = list(channel.get_keys()) if hasattr(channel, 'get_keys') else []
+                        if keys:
+                            return True
+            except Exception:
+                # ignore per-track inspection failures and continue
+                pass
+
+            # Fallback: treat known animation/transform track classes as present
+            try:
+                cls = track.get_class()
+                if cls and hasattr(cls, 'get_name'):
+                    tname = (cls.get_name() or '').lower()
+                    if any(k in tname for k in ('animation', 'transform', 'skeletal', 'spawn')):
+                        return True
+            except Exception:
+                pass
+
+        return False
+    except Exception:
+        return False
 
 
 def _is_metahuman_body_binding(binding):
@@ -735,12 +804,79 @@ def build_export_params(sequence, output_path, config=None, selection=None, auto
     flagged_spawnables = _warn_about_spawnable_export_bug(sequence, bindings, all_bindings)
     _log(f"[exUE5][FLOW] after_spawnable_check flagged_spawnables={len(flagged_spawnables)}")
 
+    # Validation: if there are Spawnable bindings in the sequence but none
+    # of those spawnables were included in this export, warn if the user is
+    # exporting only component-like bindings (e.g. CameraComponent) which
+    # would become orphaned without their parent actor (Spawnable).
+    try:
+        spawnable_ids = set(_get_spawnable_binding_ids(sequence) or [])
+        if spawnable_ids:
+            # formatted ids present in current export bindings
+            exported_binding_ids = set()
+            for b in bindings:
+                try:
+                    bid = _format_binding_id(getattr(b, 'binding_id', None)) or ""
+                except Exception:
+                    bid = ""
+                if bid:
+                    exported_binding_ids.add(bid)
+
+            if not (spawnable_ids & exported_binding_ids):
+                # No spawnable made it into the export. Detect likely orphan
+                # components in the selected bindings and log a helpful warning.
+                orphan_components = []
+                for b in bindings:
+                    try:
+                        name = _get_display_name(b) or ""
+                    except Exception:
+                        name = str(b)
+                    if 'component' in name.lower():
+                        orphan_components.append(name)
+
+                full_spawnable_names = []
+                try:
+                    for b in all_bindings:
+                        try:
+                            bid = _format_binding_id(getattr(b, 'binding_id', None)) or ""
+                        except Exception:
+                            bid = ""
+                        if bid and bid in spawnable_ids:
+                            full_spawnable_names.append(_get_display_name(b))
+                except Exception:
+                    pass
+
+                if orphan_components:
+                    _log(
+                        "[exUE5][WARNING] Export looks like it will include component-only bindings "
+                        f"{orphan_components} but no Spawnable parent(s) were selected. "
+                        f"Sequence spawnables present: {full_spawnable_names}. "
+                        "This can produce orphaned components in the FBX (missing parent actor/transform). "
+                        "Select the parent Spawnable actors (e.g. KAMSA) as well, or convert Spawnables to Possessable in Sequencer."
+                    )
+    except Exception:
+        pass
+
     _log(f"build_export_params -> bindings={len(bindings)} tracks={len(tracks)}")
     _log(
         "[exUE5][FLOW] binding_export_preview "
         f"bindings={[( _format_binding_id(getattr(binding, 'binding_id', None)) or '') for binding in bindings]} "
         f"display_names={[_get_display_name(binding) for binding in bindings]}"
     )
+    # Diagnose bindings that have no tracks/keys; these often export as
+    # empty placeholders (e.g. Spawnable with no SpawnTrack keys) which
+    # results in missing meshes/armatures in the FBX import step.
+    try:
+        no_track_bindings = [
+            _get_display_name(b) for b in bindings if not _binding_has_any_tracks(b)
+        ]
+        if no_track_bindings:
+            _log(
+                "[exUE5][WARNING] The following binding(s) appear to have no "
+                f"tracks/keys and may export as empty placeholders: {no_track_bindings}. "
+                "Check Sequencer for Transform/Skeletal Animation keys or convert Spawnables to Possessable."
+            )
+    except Exception:
+        pass
     params.bindings = bindings
     params.tracks = tracks
     _log(f"[exUE5][FLOW] export_params_ready bindings={len(params.bindings)} tracks={len(params.tracks)} output={output_path}")
