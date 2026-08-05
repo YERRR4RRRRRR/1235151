@@ -489,11 +489,67 @@ def _sort_priority(name, is_spawnable=False):
     return (4, name.lower())
 
 
-def _apply_spawnable_auto_fix_if_needed(sequence, bindings, config, fix_state):
-    """Experimental and disabled by default.
+def _frame_to_int(frame):
+    """Best-effort konwersja FrameNumber/FrameTime/int na zwykły int."""
+    if frame is None:
+        return None
+    if hasattr(frame, "value"):
+        try:
+            return int(frame.value)
+        except Exception:
+            pass
+    if hasattr(frame, "frame_number"):
+        try:
+            return _frame_to_int(frame.frame_number)
+        except Exception:
+            pass
+    try:
+        return int(frame)
+    except Exception:
+        return None
 
-    This is intentionally guarded and logged as UNVERIFIED because it mutates
-    the sequence and should not be enabled without explicit user intent.
+
+def _make_frame_number(frame_int):
+    if unreal is not None and hasattr(unreal, "FrameNumber"):
+        try:
+            return unreal.FrameNumber(frame_int)
+        except Exception:
+            pass
+    return frame_int
+
+
+def _get_sequence_range_frames(sequence):
+    """Zwraca (start, end) jako zwykłe inty dla zakresu odtwarzania sekwencji,
+    albo (None, None) jeśli nie da się ich odczytać. `end` jest korygowany o -1,
+    bo get_playback_end() jest zazwyczaj EXCLUSIVE (klatka ZA ostatnią)."""
+    start = end = None
+    try:
+        if hasattr(sequence, "get_playback_start"):
+            start = _frame_to_int(sequence.get_playback_start())
+    except Exception:
+        start = None
+    try:
+        if hasattr(sequence, "get_playback_end"):
+            end = _frame_to_int(sequence.get_playback_end())
+            if end is not None:
+                end -= 1
+    except Exception:
+        end = None
+    return start, end
+
+
+def _apply_spawnable_auto_fix_if_needed(sequence, bindings, config, fix_state):
+    """Dodaje tymczasowe klucze na Spawn Tracku dla Spawnable bindingów, u których
+    zdiagnozowano znany bug UE5.8 (Spawn Track ma <=1 klucz / same identyczne
+    wartości -> silnik nie bake'uje animacji na cały zakres eksportu, tylko
+    zwraca jedną statyczną klatkę - patrz `_diagnose_spawn_track`).
+
+    WAŻNE: poprzednia wersja tej funkcji dodawała nowy klucz na TEJ SAMEJ
+    klatce co ostatni istniejący klucz, więc de facto nadpisywała go tą samą
+    wartością i key_count się nie zmieniał (no-op, bug nie był naprawiany).
+    Ta wersja dodaje klucze na początku i końcu zakresu odtwarzania sekwencji
+    (z tą samą wartością spawn=True, więc stan "zespawnowany" się nie zmienia),
+    żeby Spawn Track miał >1 klucz pokrywający cały eksportowany zakres.
     """
     if not config.get("auto_fix_spawnable_camera_bug", False):
         return
@@ -505,7 +561,8 @@ def _apply_spawnable_auto_fix_if_needed(sequence, bindings, config, fix_state):
     if not spawnable_ids:
         return
 
-    _log("WARNING: auto_fix_spawnable_camera_bug is enabled, but this is experimental and UNVERIFIED in practice.")
+    range_start, range_end = _get_sequence_range_frames(sequence)
+
     for binding in bindings:
         binding_id = getattr(binding, "binding_id", None)
         if binding_id is None or _format_binding_id(binding_id) not in spawnable_ids:
@@ -514,6 +571,7 @@ def _apply_spawnable_auto_fix_if_needed(sequence, bindings, config, fix_state):
         if not diagnosis["will_likely_hit_bug"]:
             continue
 
+        name = _get_display_name(binding)
         candidate_channels = []
         try:
             tracks = list(binding.get_tracks()) if hasattr(binding, "get_tracks") else []
@@ -534,43 +592,84 @@ def _apply_spawnable_auto_fix_if_needed(sequence, bindings, config, fix_state):
                     if hasattr(section, "get_channels"):
                         candidate_channels.extend(list(section.get_channels()))
         except Exception as exc:
-            _log(f"_apply_spawnable_auto_fix_if_needed failed while inspecting binding: {exc}")
+            _log(f"_apply_spawnable_auto_fix_if_needed failed while inspecting binding '{name}': {exc}")
             continue
 
         for channel in candidate_channels:
-            if not hasattr(channel, "add_key"):
+            if not hasattr(channel, "add_key") or not hasattr(channel, "get_keys"):
                 continue
             try:
-                current_keys = list(channel.get_keys()) if hasattr(channel, "get_keys") else []
-                if current_keys:
-                    last_key = current_keys[-1]
-                    value = None
-                    if hasattr(last_key, "get_value"):
-                        value = last_key.get_value()
-                    elif hasattr(last_key, "value"):
-                        value = getattr(last_key, "value")
-                    if value is None:
-                        continue
-                    frame = getattr(last_key, "frame_number", None)
-                    if frame is None and hasattr(last_key, "get_frame"):
-                        frame = last_key.get_frame()
-                    if frame is None:
-                        frame = 0
-                    channel.add_key(frame, value)
-                    fix_state.append((channel, frame, value))
-                    _log("WARNING: experimental auto-fix applied a temporary extra Spawn Track key for a Spawnable binding.")
+                current_keys = list(channel.get_keys())
             except Exception as exc:
-                _log(f"_apply_spawnable_auto_fix_if_needed add_key failed: {exc}")
+                _log(f"_apply_spawnable_auto_fix_if_needed get_keys failed: {exc}")
+                continue
+            if not current_keys:
+                continue
+
+            reference_key = current_keys[-1]
+            value = None
+            if hasattr(reference_key, "get_value"):
+                value = reference_key.get_value()
+            elif hasattr(reference_key, "value"):
+                value = getattr(reference_key, "value")
+            if value is None:
+                continue
+
+            existing_frames = set()
+            for key in current_keys:
+                frame_attr = getattr(key, "frame_number", None)
+                if frame_attr is None and hasattr(key, "get_time"):
+                    try:
+                        frame_attr = key.get_time()
+                    except Exception:
+                        frame_attr = None
+                frame_int = _frame_to_int(frame_attr)
+                if frame_int is not None:
+                    existing_frames.add(frame_int)
+
+            target_frames = set()
+            if range_start is not None:
+                target_frames.add(range_start)
+            if range_end is not None:
+                target_frames.add(range_end)
+            if not target_frames:
+                # Brak dostępu do zakresu sekwencji - fallback: klatka tuż za
+                # ostatnim istniejącym kluczem, żeby key_count na pewno wzrósł.
+                fallback = max(existing_frames) + 1 if existing_frames else 1
+                target_frames.add(fallback)
+
+            for frame_int in sorted(target_frames):
+                if frame_int in existing_frames:
+                    # Na tej klatce już jest realny klucz użytkownika - nie
+                    # dotykamy go, żeby przy sprzątaniu (_remove_spawnable_auto_fix)
+                    # przypadkiem go nie usunąć.
+                    continue
+                try:
+                    channel.add_key(_make_frame_number(frame_int), value)
+                    fix_state.append((channel, frame_int, value))
+                    _log(
+                        f"[exUE5][FLOW] auto_fix_spawnable_camera_bug: dodano tymczasowy klucz "
+                        f"Spawn Track na klatce {frame_int} (binding='{name}', value={value})."
+                    )
+                except Exception as exc:
+                    _log(f"_apply_spawnable_auto_fix_if_needed add_key failed for '{name}' @ {frame_int}: {exc}")
 
 
 def _remove_spawnable_auto_fix(fix_state):
     if not fix_state:
         return
-    for channel, frame, value in reversed(fix_state):
+    for channel, frame_int, value in reversed(fix_state):
+        removed = False
         try:
             if hasattr(channel, "remove_key"):
-                channel.remove_key(frame)
-            elif hasattr(channel, "remove_key_at_frame"):
-                channel.remove_key_at_frame(frame)
+                channel.remove_key(_make_frame_number(frame_int))
+                removed = True
         except Exception as exc:
-            _log(f"_remove_spawnable_auto_fix failed: {exc}")
+            _log(f"_remove_spawnable_auto_fix remove_key failed: {exc}")
+        if not removed:
+            try:
+                if hasattr(channel, "remove_key_at_frame"):
+                    channel.remove_key_at_frame(_make_frame_number(frame_int))
+            except Exception as exc:
+                _log(f"_remove_spawnable_auto_fix remove_key_at_frame failed: {exc}")
+    fix_state.clear()

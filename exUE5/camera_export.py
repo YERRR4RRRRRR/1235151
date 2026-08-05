@@ -6,9 +6,19 @@ except ModuleNotFoundError:
     unreal = None
 
 try:
-    from exUE5.spawnable_diagnostics import _get_display_name, _format_binding_id
+    from exUE5.spawnable_diagnostics import (
+        _get_display_name,
+        _format_binding_id,
+        _apply_spawnable_auto_fix_if_needed,
+        _remove_spawnable_auto_fix,
+    )
 except ModuleNotFoundError:
-    from spawnable_diagnostics import _get_display_name, _format_binding_id
+    from spawnable_diagnostics import (
+        _get_display_name,
+        _format_binding_id,
+        _apply_spawnable_auto_fix_if_needed,
+        _remove_spawnable_auto_fix,
+    )
 
 try:
     from exUE5.exporter_core import get_world
@@ -259,9 +269,25 @@ def _export_camera_bindings_native(sequence, bindings, output_path):
         f"{[_get_display_name(b) for b in bindings]} filename={params.fbx_file_name}"
     )
 
-    success = bool(unreal.SequencerTools.export_level_sequence_fbx(params))
-    unreal.log(f"[exUE5][FLOW] camera_export native export result={success}")
-    return success
+    # Znany bug UE5.8: jeśli kamera to Spawnable, a jej Spawn Track ma tylko
+    # jeden klucz / same identyczne wartości (czyli po prostu "zespawnowana
+    # przez cały ujęcie", bez żadnego togglowania), to export_level_sequence_fbx
+    # potrafi zwrócić result=True, ale zbake'owana animacja ma zerową długość
+    # (kamera trafia do FBX jako pojedyncza statyczna klatka, bez kluczy - patrz
+    # zgłoszenie użytkownika: "nie mam tej kamery i nie mam key"). Wymuszamy tu
+    # ten sam auto-fix, którego głównie eksporter (body/face) używa tylko
+    # opcjonalnie - dla eksportu kamery jest on zawsze aktywny, bo to dokładnie
+    # ten scenariusz, do którego został napisany.
+    fix_state = []
+    try:
+        _apply_spawnable_auto_fix_if_needed(
+            sequence, bindings, {"auto_fix_spawnable_camera_bug": True}, fix_state
+        )
+        success = bool(unreal.SequencerTools.export_level_sequence_fbx(params))
+        unreal.log(f"[exUE5][FLOW] camera_export native export result={success}")
+        return success
+    finally:
+        _remove_spawnable_auto_fix(fix_state)
 
 
 def _run_single_camera_export(actor, output_path, options, show_dialog, prompt):
