@@ -9,15 +9,13 @@ try:
     from exUE5.spawnable_diagnostics import (
         _get_display_name,
         _format_binding_id,
-        _apply_spawnable_auto_fix_if_needed,
-        _remove_spawnable_auto_fix,
+        _get_spawnable_binding_ids,
     )
 except ModuleNotFoundError:
     from spawnable_diagnostics import (
         _get_display_name,
         _format_binding_id,
-        _apply_spawnable_auto_fix_if_needed,
-        _remove_spawnable_auto_fix,
+        _get_spawnable_binding_ids,
     )
 
 try:
@@ -233,6 +231,140 @@ def _build_native_fbx_export_options():
     return options
 
 
+def _get_level_sequence_editor_subsystem():
+    """Zwraca unreal.LevelSequenceEditorSubsystem albo None, jeśli nie jest
+    dostępny na tej wersji silnika (defensywnie - żeby brak subsystemu nie
+    wysypał eksportu, tylko spowodował fallback bez konwersji)."""
+    if unreal is None:
+        return None
+    try:
+        return unreal.get_editor_subsystem(unreal.LevelSequenceEditorSubsystem)
+    except Exception as exc:
+        unreal.log(f"[exUE5][ERROR] camera_export: nie udało się pobrać LevelSequenceEditorSubsystem: {exc}")
+        return None
+
+
+def _convert_spawnables_to_possessables(sequence, bindings):
+    """Naprawa właściwa dla znanego bugu UE5.8: jeśli binding kamery jest
+    Spawnable, export_level_sequence_fbx wywołany z automatyzacji/Pythona
+    (poza normalnym scrubowaniem playheadu przez usera) potrafi zbake'ować
+    animację o zerowej długości (statyczna jednoklatkowa transformacja -
+    patrz diagnoza w treści zgłoszenia). Test kontrolny użytkownika
+    potwierdził, że ręczna konwersja PPM -> "Convert Selected Binding(s)
+    To... -> Possessable" + eksport działa poprawnie - więc robimy
+    programowo dokładnie to samo, PRZED wywołaniem
+    export_level_sequence_fbx, dla każdej zaznaczonej kamery Spawnable.
+
+    WAŻNE: convert_to_possessable() zwraca NOWY MovieSceneBindingProxy
+    (nowy GUID) - stary binding_id spawnable'a przestaje być poprawny po
+    konwersji. Dlatego trzeba (a) użyć NOWEGO proxy do samego eksportu, i
+    (b) zapamiętać ten NOWY proxy (nie stary), żeby po eksporcie
+    przywrócić Spawnable dokładnie tej kamery.
+
+    Zwraca (export_bindings, conversion_records):
+    - export_bindings: lista bindingów 1:1 z `bindings`, ale ze
+      Spawnable'ami zamienionymi na ich nowe Possessable-odpowiedniki.
+    - conversion_records: lista {"name", "possessable_binding"} - TYLKO
+      dla bindingów, które faktycznie skonwertowano (używana do
+      przywracania w finally).
+    """
+    export_bindings = []
+    conversion_records = []
+
+    if unreal is None or sequence is None:
+        return list(bindings), conversion_records
+
+    spawnable_ids = _get_spawnable_binding_ids(sequence)
+    if not spawnable_ids:
+        # Żadna kamera w sekwencji nie jest Spawnable - nic do konwersji.
+        return list(bindings), conversion_records
+
+    subsystem = _get_level_sequence_editor_subsystem()
+    if subsystem is None or not hasattr(subsystem, "convert_to_possessable"):
+        unreal.log(
+            "[exUE5][WARNING] camera_export: LevelSequenceEditorSubsystem.convert_to_possessable "
+            "niedostępny na tej wersji silnika - eksportuję bez konwersji (kamery Spawnable mogą "
+            "wyjść jako statyczna jednoklatkowa transformacja - znany bug UE5.8)."
+        )
+        return list(bindings), conversion_records
+
+    for binding in bindings:
+        binding_id = getattr(binding, "binding_id", None)
+        name = _get_display_name(binding)
+
+        if binding_id is None or _format_binding_id(binding_id) not in spawnable_ids:
+            # Możliwe (Possessable) - eksportujemy bez zmian.
+            export_bindings.append(binding)
+            continue
+
+        unreal.log(
+            f"[exUE5][FLOW] camera_export: binding '{name}' jest Spawnable - konwertuję na "
+            "Possessable przed eksportem (fix UE5.8: Spawnable + automatyzacja Python -> "
+            "statyczna klatka bez animacji)."
+        )
+        try:
+            possessable_binding = subsystem.convert_to_possessable(binding)
+        except Exception as exc:
+            unreal.log(
+                f"[exUE5][ERROR] camera_export: konwersja Spawnable->Possessable nie powiodła się "
+                f"dla '{name}': {exc}. Eksportuję oryginalny binding (może dać statyczną klatkę)."
+            )
+            export_bindings.append(binding)
+            continue
+
+        if possessable_binding is None:
+            unreal.log(
+                f"[exUE5][WARNING] camera_export: convert_to_possessable zwróciło None dla '{name}' "
+                "- eksportuję oryginalny binding bez konwersji."
+            )
+            export_bindings.append(binding)
+            continue
+
+        export_bindings.append(possessable_binding)
+        conversion_records.append({"name": name, "possessable_binding": possessable_binding})
+        unreal.log(f"[exUE5][FLOW] camera_export: '{name}' skonwertowana na Possessable OK.")
+
+    return export_bindings, conversion_records
+
+
+def _restore_spawnables_after_export(conversion_records):
+    """Przywraca stan Spawnable dla każdej kamery skonwertowanej przez
+    `_convert_spawnables_to_possessables`. Każdy wpis jest przywracany
+    NIEZALEŻNIE (własny try/except) - błąd przy przywracaniu jednej kamery
+    nie może zablokować przywrócenia pozostałych, zgodnie z wymogiem
+    eksportu wielu kamer naraz."""
+    if not conversion_records:
+        return
+
+    subsystem = _get_level_sequence_editor_subsystem()
+    if subsystem is None or not hasattr(subsystem, "convert_to_spawnable"):
+        names = [record["name"] for record in conversion_records]
+        unreal.log(
+            "[exUE5][ERROR] camera_export: nie można przywrócić stanu Spawnable po eksporcie - "
+            f"LevelSequenceEditorSubsystem.convert_to_spawnable niedostępny. Kamery pozostały "
+            f"jako Possessable, przywróć je ręcznie w Sequencerze: {names}"
+        )
+        return
+
+    for record in conversion_records:
+        name = record["name"]
+        possessable_binding = record["possessable_binding"]
+        try:
+            restored = subsystem.convert_to_spawnable(possessable_binding)
+            if restored:
+                unreal.log(f"[exUE5][FLOW] camera_export: '{name}' przywrócona do Spawnable OK.")
+            else:
+                unreal.log(
+                    f"[exUE5][WARNING] camera_export: convert_to_spawnable dla '{name}' zwróciło "
+                    "puste/None - kamera może zostać jako Possessable, sprawdź ręcznie w Sequencerze."
+                )
+        except Exception as exc:
+            unreal.log(
+                f"[exUE5][ERROR] camera_export: przywrócenie Spawnable dla '{name}' nie powiodło się: "
+                f"{exc}. TA kamera zostaje jako Possessable - pozostałe kamery nie są tym dotknięte."
+            )
+
+
 def _export_camera_bindings_native(sequence, bindings, output_path):
     """Eksport 1:1 z natywnym PPM -> Export w Sequencerze.
 
@@ -255,39 +387,38 @@ def _export_camera_bindings_native(sequence, bindings, output_path):
         except Exception:
             world = None
 
+    # Znany bug UE5.8: jeśli binding kamery jest Spawnable,
+    # export_level_sequence_fbx wywołany z automatyzacji/Pythona (poza
+    # normalnym scrubowaniem playheadu przez usera w edytorze) nie
+    # ewaluuje spawnu poprawnie na cały zakres eksportu, więc zamiast
+    # animacji dostajemy jedną statyczną klatkę (patrz diagnoza w opisie
+    # zgłoszenia + test kontrolny: ręczna konwersja na Possessable +
+    # ręczny eksport działa poprawnie). Naprawiamy to konwertując KAŻDĄ
+    # zaznaczoną kamerę Spawnable na Possessable przed eksportem, i
+    # przywracając Spawnable po (w finally, per-kamera - patrz
+    # _restore_spawnables_after_export).
+    export_bindings, conversion_records = _convert_spawnables_to_possessables(sequence, bindings)
+
     params = unreal.SequencerExportFBXParams()
     params.world = world
     params.sequence = sequence
     params.root_sequence = sequence
-    params.bindings = bindings
+    params.bindings = export_bindings
     params.tracks = []
     params.fbx_file_name = os.path.normpath(output_path)
     params.override_options = _build_native_fbx_export_options()
 
     unreal.log(
         "[exUE5][FLOW] camera_export native export bindings="
-        f"{[_get_display_name(b) for b in bindings]} filename={params.fbx_file_name}"
+        f"{[_get_display_name(b) for b in export_bindings]} filename={params.fbx_file_name}"
     )
 
-    # Znany bug UE5.8: jeśli kamera to Spawnable, a jej Spawn Track ma tylko
-    # jeden klucz / same identyczne wartości (czyli po prostu "zespawnowana
-    # przez cały ujęcie", bez żadnego togglowania), to export_level_sequence_fbx
-    # potrafi zwrócić result=True, ale zbake'owana animacja ma zerową długość
-    # (kamera trafia do FBX jako pojedyncza statyczna klatka, bez kluczy - patrz
-    # zgłoszenie użytkownika: "nie mam tej kamery i nie mam key"). Wymuszamy tu
-    # ten sam auto-fix, którego głównie eksporter (body/face) używa tylko
-    # opcjonalnie - dla eksportu kamery jest on zawsze aktywny, bo to dokładnie
-    # ten scenariusz, do którego został napisany.
-    fix_state = []
     try:
-        _apply_spawnable_auto_fix_if_needed(
-            sequence, bindings, {"auto_fix_spawnable_camera_bug": True}, fix_state
-        )
         success = bool(unreal.SequencerTools.export_level_sequence_fbx(params))
         unreal.log(f"[exUE5][FLOW] camera_export native export result={success}")
         return success
     finally:
-        _remove_spawnable_auto_fix(fix_state)
+        _restore_spawnables_after_export(conversion_records)
 
 
 def _run_single_camera_export(actor, output_path, options, show_dialog, prompt):

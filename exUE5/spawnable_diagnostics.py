@@ -539,7 +539,23 @@ def _get_sequence_range_frames(sequence):
 
 
 def _apply_spawnable_auto_fix_if_needed(sequence, bindings, config, fix_state):
-    """Dodaje tymczasowe klucze na Spawn Tracku dla Spawnable bindingów, u których
+    """UWAGA - dla eksportu KAMER (camera_export.py) ta funkcja jest
+    WYCOFANA: próba naprawy bugu Spawnable+FBX-export przez dopisywanie
+    tymczasowych kluczy na Spawn Tracku nie zadziałała w testach - plik
+    wychodził jeszcze mniejszy niż źle działający oryginał (prawdopodobnie
+    skracała okno spawnu zamiast je wydłużać). camera_export.py nie
+    importuje już tej funkcji; poprawna naprawa dla kamer to programowa
+    konwersja Spawnable->Possessable przed eksportem, patrz
+    camera_export._convert_spawnables_to_possessables (analogicznie do
+    ręcznego testu kontrolnego użytkownika: "Convert Selected Binding(s)
+    To... -> Possessable" + Export).
+
+    Funkcja NADAL JEST UŻYWANA przez główny eksporter (exporter_core.py,
+    body/face) jako opcjonalny fix kontrolowany flagą
+    "auto_fix_spawnable_camera_bug" w config.json (domyślnie false) -
+    dlatego nie została usunięta, tylko odpięta od ścieżki kamer.
+
+    Dodaje tymczasowe klucze na Spawn Tracku dla Spawnable bindingów, u których
     zdiagnozowano znany bug UE5.8 (Spawn Track ma <=1 klucz / same identyczne
     wartości -> silnik nie bake'uje animacji na cały zakres eksportu, tylko
     zwraca jedną statyczną klatkę - patrz `_diagnose_spawn_track`).
@@ -656,6 +672,10 @@ def _apply_spawnable_auto_fix_if_needed(sequence, bindings, config, fix_state):
 
 
 def _remove_spawnable_auto_fix(fix_state):
+    """Sprzątanie dla _apply_spawnable_auto_fix_if_needed - wycofane tylko
+    ze ścieżki eksportu kamer (camera_export.py), wciąż używane przez
+    exporter_core.py dla głównego eksportu body/face (patrz notatka
+    powyżej w _apply_spawnable_auto_fix_if_needed)."""
     if not fix_state:
         return
     for channel, frame_int, value in reversed(fix_state):
