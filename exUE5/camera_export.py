@@ -10,6 +10,14 @@ try:
 except ModuleNotFoundError:
     from spawnable_diagnostics import _get_display_name, _format_binding_id
 
+try:
+    from exUE5.exporter_core import get_world
+except ModuleNotFoundError:
+    try:
+        from exporter_core import get_world
+    except ModuleNotFoundError:
+        get_world = None
+
 
 def _is_camera_binding(binding):
     if binding is None:
@@ -67,14 +75,20 @@ def _get_selected_camera_actors():
     return actors
 
 
-def _resolve_camera_actors(sequence, camera_binding_ids):
-    actors = []
-    if unreal is None or sequence is None:
-        return actors
+def _resolve_camera_bindings(sequence, camera_binding_ids):
+    """Znajdź w sekwencji bindingi kamer odpowiadające zaznaczonym ID.
 
-    lib = unreal.LevelSequenceEditorBlueprintLibrary
+    To jest dokładnie ta sama identyfikacja bindingu, której UE5 używa po
+    kliknięciu PPM na tracku w Sequencerze i wybraniu "Export..." (patrz
+    11.png) - dopasowanie po sformatowanym binding_id, surowym binding_id
+    lub nazwie wyświetlanej.
+    """
+    bindings = []
+    if unreal is None or sequence is None:
+        return bindings
+
     binding_list = sequence.get_bindings()
-    unreal.log(f"[exUE5][FLOW] camera_export resolving camera actors for {len(binding_list)} bindings")
+    unreal.log(f"[exUE5][FLOW] camera_export resolving camera bindings for {len(binding_list)} bindings")
     unreal.log(f"[exUE5][FLOW] camera_export camera_binding_ids={camera_binding_ids}")
 
     normalized_camera_binding_ids = set(str(item) for item in camera_binding_ids)
@@ -83,35 +97,48 @@ def _resolve_camera_actors(sequence, camera_binding_ids):
         bid = _format_binding_id(raw_binding_id) or ""
         raw_bid_str = str(raw_binding_id) if raw_binding_id is not None else ""
         name = _get_display_name(binding)
-        unreal.log(
-            f"[exUE5][FLOW] camera_export checking binding '{name}' id='{bid}' raw_id='{raw_bid_str}'"
-        )
-        if bid not in normalized_camera_binding_ids and raw_bid_str not in normalized_camera_binding_ids and name not in normalized_camera_binding_ids:
+        if bid in normalized_camera_binding_ids or raw_bid_str in normalized_camera_binding_ids or name in normalized_camera_binding_ids:
+            bindings.append(binding)
+            unreal.log(f"[exUE5][FLOW] camera_export matched binding '{name}' id='{bid}'")
+        else:
             unreal.log(f"[exUE5][FLOW] camera_export skipping binding '{name}'")
+
+    unreal.log(f"[exUE5][FLOW] camera_export resolved {len(bindings)} camera bindings")
+    return bindings
+
+
+def _resolve_camera_actors(sequence, camera_binding_ids):
+    """Zapasowa (legacy) rezolucja aktorów kamer - używana WYŁĄCZNIE gdy w
+    sekwencji nie da się dopasować żadnego bindingu (patrz
+    _export_camera_actors_legacy). Ta ścieżka NIE odzwierciedla 1:1
+    natywnego eksportu z Sequencera.
+    """
+    actors = []
+    if unreal is None or sequence is None:
+        return actors
+
+    lib = unreal.LevelSequenceEditorBlueprintLibrary
+    binding_list = sequence.get_bindings()
+    normalized_camera_binding_ids = set(str(item) for item in camera_binding_ids)
+    for binding in binding_list:
+        raw_binding_id = getattr(binding, "binding_id", None)
+        bid = _format_binding_id(raw_binding_id) or ""
+        raw_bid_str = str(raw_binding_id) if raw_binding_id is not None else ""
+        name = _get_display_name(binding)
+        if bid not in normalized_camera_binding_ids and raw_bid_str not in normalized_camera_binding_ids and name not in normalized_camera_binding_ids:
             continue
         try:
             proxy = unreal.SequencerBindingProxy(binding.binding_id, sequence)
             bound = lib.get_bound_objects(proxy) if hasattr(lib, "get_bound_objects") else []
-            unreal.log(f"[exUE5][FLOW] camera_export bound objects count={len(bound)} for binding '{name}'")
         except Exception as exc:
-            _log = lambda message: print(message) if unreal is None else unreal.log(message)
-            _log(f"[exUE5][WARNING] camera_export: nie udało się rozwiązać bindingu '{name}': {exc}")
+            unreal.log(f"[exUE5][WARNING] camera_export: nie udało się rozwiązać bindingu '{name}': {exc}")
             bound = []
         for obj in bound:
-            try:
-                obj_label = obj.get_actor_label() if hasattr(obj, "get_actor_label") else str(obj)
-            except Exception:
-                obj_label = str(obj)
-            unreal.log(f"[exUE5][FLOW] camera_export bound object type={type(obj).__name__} label={obj_label}")
             if isinstance(obj, unreal.Actor) and _is_camera_actor(obj):
                 actors.append(obj)
-                unreal.log(f"[exUE5][FLOW] camera_export added actor '{obj_label}'")
-            else:
-                unreal.log(f"[exUE5][FLOW] camera_export skipped non-camera object '{obj_label}'")
     if not actors:
-        unreal.log("[exUE5][FLOW] camera_export no sequence-bound camera actors found, falling back to selected actors")
         actors = _get_selected_camera_actors()
-    unreal.log(f"[exUE5][FLOW] camera_export resolved {len(actors)} camera actors")
+    unreal.log(f"[exUE5][FLOW] camera_export (legacy) resolved {len(actors)} camera actors")
     return actors
 
 
@@ -120,6 +147,121 @@ def _sanitize_filename(filename):
     sanitized = re.sub(r"[^0-9A-Za-z._-]", "_", filename or "camera")
     sanitized = re.sub(r"_+", "_", sanitized)
     return sanitized.strip("._-") or "camera"
+
+
+def _build_native_fbx_export_options():
+    """Zbuduje unreal.FbxExportOption z ustawieniami IDENTYCZNYMI jak w oknie
+    "FBX Export Options" pokazanym po PPM -> Export na kamerze w Sequencerze
+    (patrz 22.png). Każde pole ustawiane jest defensywnie (hasattr), żeby
+    skrypt nie wysypał się na starszych wersjach silnika, w których część
+    tych opcji jeszcze nie istnieje.
+    """
+    options = unreal.FbxExportOption()
+
+    def _set(name, value):
+        try:
+            if hasattr(options, name):
+                setattr(options, name, value)
+                unreal.log(f"[exUE5][FLOW] camera_export option {name}={value}")
+            else:
+                unreal.log(f"[exUE5][WARNING] camera_export: opcja '{name}' niedostępna w tej wersji silnika (pomijam)")
+        except Exception as exc:
+            unreal.log(f"[exUE5][WARNING] camera_export: nie udało się ustawić opcji '{name}': {exc}")
+
+    # --- Exporter ---
+    if hasattr(unreal, "FbxExportCompatibility") and hasattr(unreal.FbxExportCompatibility, "FBX_2013"):
+        _set("fbx_export_compatibility", unreal.FbxExportCompatibility.FBX_2013)
+
+    # --- Exporter > Advanced ---
+    _set("ascii", False)
+    _set("force_front_x_axis", False)
+
+    # --- Mesh ---
+    _set("vertex_color", False)
+    _set("level_of_detail", False)
+
+    # --- Static Mesh ---
+    _set("collision", False)
+    _set("export_source_mesh", False)
+
+    # --- Skeletal Mesh ---
+    _set("export_morph_targets", False)
+
+    # --- Animation ---
+    _set("export_preview_mesh", True)
+    _set("map_skeletal_motion_to_root", False)
+    _set("export_local_time", True)
+
+    # --- Animation > Advanced ---
+    if hasattr(unreal, "MovieSceneBakeType"):
+        if hasattr(unreal.MovieSceneBakeType, "BAKE_TRANSFORMS"):
+            _set("bake_camera_and_light_animation", unreal.MovieSceneBakeType.BAKE_TRANSFORMS)
+        else:
+            unreal.log("[exUE5][WARNING] camera_export: MovieSceneBakeType.BAKE_TRANSFORMS niedostępne na tej wersji silnika")
+        if hasattr(unreal.MovieSceneBakeType, "NONE"):
+            _set("bake_actor_animation", unreal.MovieSceneBakeType.NONE)
+
+    # --- Material ---
+    if hasattr(unreal, "FbxMaterialBakeMode") and hasattr(unreal.FbxMaterialBakeMode, "DISABLED"):
+        _set("bake_material_inputs", unreal.FbxMaterialBakeMode.DISABLED)
+
+    # --- Material > Default Material Bake Size (1024x1024, Auto Detect ON) ---
+    # Nie ma to wpływu na eksport dopóki Bake Material Inputs = Disabled,
+    # ustawiane wyłącznie dla pełnej zgodności z oknem dialogowym z 22.png.
+    try:
+        if hasattr(options, "default_material_bake_size"):
+            bake_size = options.default_material_bake_size
+            if hasattr(bake_size, "auto_detect"):
+                bake_size.auto_detect = True
+            if hasattr(bake_size, "size") and hasattr(unreal, "IntPoint"):
+                bake_size.size = unreal.IntPoint(1024, 1024)
+            options.default_material_bake_size = bake_size
+            unreal.log("[exUE5][FLOW] camera_export option default_material_bake_size=1024x1024 auto_detect=True")
+    except Exception as exc:
+        unreal.log(f"[exUE5][WARNING] camera_export: nie udało się ustawić default_material_bake_size: {exc}")
+
+    return options
+
+
+def _export_camera_bindings_native(sequence, bindings, output_path):
+    """Eksport 1:1 z natywnym PPM -> Export w Sequencerze.
+
+    Używa DOKŁADNIE tego samego wywołania silnika co reszta pluginu do
+    eksportu głównego (exporter_core.build_export_params /
+    unreal.SequencerTools.export_level_sequence_fbx), tylko z bindingami
+    ograniczonymi do zaznaczonych kamer. Wszystkie zaznaczone kamery trafiają
+    do JEDNEGO pliku FBX - dokładnie tak jak w Sequencerze przy zaznaczeniu
+    wielu tracków i kliknięciu Export.
+    """
+    world = None
+    if get_world is not None:
+        try:
+            world = get_world()
+        except Exception:
+            world = None
+    if world is None:
+        try:
+            world = unreal.EditorLevelLibrary.get_editor_world()
+        except Exception:
+            world = None
+
+    params = unreal.SequencerExportFBXParams()
+    params.world = world
+    params.sequence = sequence
+    params.root_sequence = sequence
+    params.bindings = bindings
+    params.tracks = []
+    params.fbx_file_name = os.path.normpath(output_path)
+    params.override_options = _build_native_fbx_export_options()
+
+    unreal.log(
+        "[exUE5][FLOW] camera_export native export bindings="
+        f"{[_get_display_name(b) for b in bindings]} filename={params.fbx_file_name}"
+    )
+
+    success = bool(unreal.SequencerTools.export_level_sequence_fbx(params))
+    unreal.log(f"[exUE5][FLOW] camera_export native export result={success}")
+    return success
 
 
 def _run_single_camera_export(actor, output_path, options, show_dialog, prompt):
@@ -131,11 +273,49 @@ def _run_single_camera_export(actor, output_path, options, show_dialog, prompt):
     task.prompt = prompt
     task.replace_identical = True
     task.options = options
-    unreal.log(
-        f"[exUE5][FLOW] camera_export task.object={actor} filename={task.filename} "
-        f"automated={task.automated} prompt={task.prompt}"
-    )
     return bool(unreal.Exporter.run_asset_export_task(task))
+
+
+def _export_camera_actors_legacy(sequence, camera_binding_ids, output_path, show_dialog):
+    """Zapasowa metoda eksportu przez AssetExportTask na Actorze.
+
+    Używana WYŁĄCZNIE gdy w sekwencji nie udało się dopasować żadnego
+    bindingu kamery (np. selekcja z GUI wskazuje na coś spoza sekwencji).
+    Ta ścieżka NIE jest tożsama z natywnym PPM -> Export w Sequencerze -
+    jest zachowana jako siatka bezpieczeństwa, żeby eksport nie failował
+    całkowicie w nietypowych przypadkach.
+    """
+    actors = _resolve_camera_actors(sequence, camera_binding_ids)
+    if not actors:
+        raise RuntimeError(
+            "Nie znaleziono żadnego aktora kamery w świecie dla zaznaczonych bindingów. "
+            "Sprawdź, czy Spawnable jest zespawnowany w bieżącej klatce."
+        )
+    actor_labels = [a.get_actor_label() for a in actors]
+    options = _build_native_fbx_export_options()
+
+    output_dir = os.path.dirname(output_path)
+
+    if len(actors) == 1:
+        output_file = os.path.normpath(output_path)
+        unreal.log(f"[exUE5][FLOW] camera_export (legacy) exporting single camera actor: {actor_labels[0]}")
+        return _run_single_camera_export(actors[0], output_file, options, show_dialog, show_dialog)
+
+    prefix = os.path.splitext(os.path.basename(output_path))[0] or "KAMERA_TRANS"
+    success = True
+    actor_name_counts = {}
+    for index, actor in enumerate(actors):
+        label = actor.get_actor_label() if hasattr(actor, "get_actor_label") else f"camera_{index}"
+        safe_label = _sanitize_filename(label)
+        count = actor_name_counts.get(safe_label, 0) + 1
+        actor_name_counts[safe_label] = count
+        if count > 1:
+            safe_label = f"{safe_label}_{count}"
+        output_file = os.path.join(output_dir or os.getcwd(), f"{prefix}_{safe_label}.fbx")
+        prompt = show_dialog and index == 0
+        if not _run_single_camera_export(actor, output_file, options, show_dialog, prompt):
+            success = False
+    return success
 
 
 def export_cameras_fbx(sequence, camera_binding_ids, output_path, show_dialog=True):
@@ -158,32 +338,6 @@ def export_cameras_fbx(sequence, camera_binding_ids, output_path, show_dialog=Tr
             except Exception:
                 pass
 
-        actors = _resolve_camera_actors(sequence, camera_binding_ids)
-        if not actors:
-            raise RuntimeError(
-                "Nie znaleziono żadnego aktora kamery w świecie dla zaznaczonych bindingów. "
-                "Sprawdź, czy Spawnable jest zespawnowany w bieżącej klatce."
-            )
-        actor_labels = [a.get_actor_label() for a in actors]
-        unreal.log(f"[exUE5][FLOW] camera_export resolved actors={actor_labels}")
-
-        options = unreal.FbxExportOption()
-        options.export_local_time = True
-        options.export_preview_mesh = True
-        options.export_morph_targets = False
-        if hasattr(unreal, "MovieSceneBakeType") and hasattr(unreal.MovieSceneBakeType, "BAKE_TRANSFORMS"):
-            options.bake_camera_and_light_animation = unreal.MovieSceneBakeType.BAKE_TRANSFORMS
-            if hasattr(options, "bake_actor_animation"):
-                options.bake_actor_animation = unreal.MovieSceneBakeType.NONE
-        else:
-            unreal.log("[exUE5][WARNING] camera_export: MovieSceneBakeType.BAKE_TRANSFORMS niedostępne na tej wersji silnika")
-        unreal.log(
-            f"[exUE5][FLOW] camera_export options export_local_time={options.export_local_time} "
-            f"export_preview_mesh={getattr(options, 'export_preview_mesh', None)} "
-            f"bake_camera_and_light_animation={getattr(options, 'bake_camera_and_light_animation', None)} "
-            f"bake_actor_animation={getattr(options, 'bake_actor_animation', None)}"
-        )
-
         if not output_path:
             raise RuntimeError("Nie podano output_path dla eksportu kamery")
 
@@ -195,28 +349,19 @@ def export_cameras_fbx(sequence, camera_binding_ids, output_path, show_dialog=Tr
                 unreal.log(f"[exUE5][ERROR] camera_export: nie udało się utworzyć folderu '{output_dir}': {exc}")
                 raise
 
-        if len(actors) == 1:
-            output_file = os.path.normpath(output_path)
-            unreal.log(f"[exUE5][FLOW] camera_export exporting single camera actor: {actor_labels[0]}")
-            return _run_single_camera_export(actors[0], output_file, options, show_dialog, show_dialog)
+        bindings = _resolve_camera_bindings(sequence, camera_binding_ids)
+        if bindings:
+            # Dokładnie ta sama ścieżka co natywny PPM -> Export w
+            # Sequencerze: jeden plik FBX, ustawienia 1:1 z 22.png,
+            # eksport w pełni automatyczny (bez żadnych okienek).
+            return _export_camera_bindings_native(sequence, bindings, output_path)
 
-        prefix = os.path.splitext(os.path.basename(output_path))[0]
-        if not prefix:
-            prefix = "KAMERA_TRANS"
-        success = True
-        actor_name_counts = {}
-        for index, actor in enumerate(actors):
-            label = actor.get_actor_label() if hasattr(actor, "get_actor_label") else f"camera_{index}"
-            safe_label = _sanitize_filename(label)
-            count = actor_name_counts.get(safe_label, 0) + 1
-            actor_name_counts[safe_label] = count
-            if count > 1:
-                safe_label = f"{safe_label}_{count}"
-            output_file = os.path.join(output_dir or os.getcwd(), f"{prefix}_{safe_label}.fbx")
-            prompt = show_dialog and index == 0
-            if not _run_single_camera_export(actor, output_file, options, show_dialog, prompt):
-                success = False
-        return success
+        unreal.log(
+            "[exUE5][WARNING] camera_export: nie znaleziono bindingów kamer w sekwencji dla podanych ID, "
+            "przechodzę na zapasową metodę eksportu przez zaznaczone aktory "
+            "(UWAGA: ta ścieżka może nie odzwierciedlać 1:1 natywnego eksportu z Sequencera)."
+        )
+        return _export_camera_actors_legacy(sequence, camera_binding_ids, output_path, show_dialog)
     finally:
         if saved_time is not None and hasattr(lib, "set_current_time"):
             try:

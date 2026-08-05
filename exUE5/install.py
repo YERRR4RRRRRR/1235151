@@ -27,6 +27,10 @@ for module_name in (
     'exUE5.exporter_core',
     'exUE5.spawnable_diagnostics',
     'exUE5.ui_dialogs',
+    'camera_export',
+    'camera_dialog',
+    'exUE5.camera_export',
+    'exUE5.camera_dialog',
 ):
     if module_name in sys.modules:
         del sys.modules[module_name]
