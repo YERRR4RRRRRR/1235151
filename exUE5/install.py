@@ -31,6 +31,8 @@ for module_name in (
     'camera_dialog',
     'exUE5.camera_export',
     'exUE5.camera_dialog',
+    'ui_style',
+    'exUE5.ui_style',
 ):
     if module_name in sys.modules:
         del sys.modules[module_name]

@@ -56,7 +56,7 @@ except ModuleNotFoundError:
     from menu_utils import _log, _try_remove_menu_member, _clear_menu_entries
 
 # Zawsze podbij wersję po każdej zmianie w kodzie.
-PLUGIN_VERSION = "v1.6"
+PLUGIN_VERSION = "v1.8"
 
 
 def _clear_existing_exporter_menu(menus, main_menu):
@@ -123,19 +123,21 @@ def _run_camera_dialog():
 
     result = show_camera_export_dialog(camera_bindings, _get_display_name, default_output_path)
     if result is not None:
+        # The dialog no longer has a separate "export cameras" enable
+        # checkbox -- it exists solely to configure and confirm the camera
+        # export, so a non-cancelled result always means "go".
         _camera_export_settings = result
         unreal.log(f"[exUE5] Ustawienia eksportu kamer zapisane: {result}")
-        if result.get("export_cameras"):
-            try:
-                unreal.log("[exUE5] Running camera export with UE5 FBX dialog")
-                export_cameras_fbx(
-                    sequence,
-                    result.get("camera_binding_ids", set()),
-                    result.get("output_path"),
-                    show_dialog=True,
-                )
-            except Exception as exc:
-                unreal.log(f"[exUE5] ERROR Camera export failed from dialog: {exc}")
+        try:
+            unreal.log("[exUE5] Running camera export with UE5 FBX dialog")
+            export_cameras_fbx(
+                sequence,
+                result.get("camera_binding_ids", set()),
+                result.get("output_path"),
+                show_dialog=True,
+            )
+        except Exception as exc:
+            unreal.log(f"[exUE5] ERROR Camera export failed from dialog: {exc}")
 
 
 def _run_export():
@@ -193,7 +195,7 @@ def _run_export():
         unreal.log(f"[exUE5] ERROR Export failed: {exc}")
         return
 
-    if _camera_export_settings and _camera_export_settings.get("export_cameras"):
+    if _camera_export_settings:
         unreal.log("[exUE5] Starting camera export after main export")
         try:
             from exUE5.exporter import get_current_sequence

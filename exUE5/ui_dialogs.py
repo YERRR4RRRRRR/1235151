@@ -24,6 +24,11 @@ except ModuleNotFoundError:
         def _log_ui(message):
             print(f"[exUE5] {message}")
 
+try:
+    from exUE5 import ui_style
+except ModuleNotFoundError:
+    import ui_style
+
 
 def _show_export_dialog(config):
     """Show a Tkinter dialog to choose filename and destination folder."""
@@ -36,20 +41,8 @@ def _show_export_dialog(config):
         return None
 
     root = tk.Tk()
-    root.title("Export Sequence FBX")
-    root.geometry("520x260")
-    root.resizable(False, False)
-    root.configure(bg="#2b2b2b")
-
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except Exception:
-        pass
-    style.configure("TButton", background="#2f7f3f", foreground="white", borderwidth=0)
-    style.configure("TEntry", fieldbackground="#1e1e1e", foreground="white")
-    style.configure("TLabel", background="#2b2b2b", foreground="white")
-    style.configure("TMenubutton", background="#2f7f3f", foreground="white")
+    ui_style.apply_theme(root, title="Export Sequence FBX", min_size=(480, 280))
+    ui_style.apply_geometry(root, 560, 300)
 
     default_filename = config.get("default_output_filename", "exported_sequence.fbx") or "exported_sequence.fbx"
     default_folder = config.get("default_output_folder") or os.path.join(os.path.expanduser("~"), "Exports")
@@ -100,7 +93,7 @@ def _show_export_dialog(config):
 
     ttk.Label(root, text="Nazwa pliku:").grid(row=0, column=0, sticky="w", padx=14, pady=(14, 6))
     filename_entry = ttk.Entry(root, textvariable=filename_var, width=52, style="TEntry")
-    filename_entry.grid(row=1, column=0, columnspan=2, padx=14, pady=(0, 6))
+    filename_entry.grid(row=1, column=0, columnspan=2, padx=14, pady=(0, 6), sticky="ew")
 
     def _select_all_on_focus(event):
         # Defer selection until idle; clicking triggers ButtonPress after
@@ -123,12 +116,13 @@ def _show_export_dialog(config):
     ttk.Label(root, textvariable=output_path_var, foreground="white").grid(row=5, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 8))
 
     ttk.Button(root, text="GO EXPORT", command=confirm, width=18).grid(row=6, column=0, padx=14, pady=(6, 14), sticky="w")
-    ttk.Button(root, text="Cancel", command=cancel, width=14).grid(row=6, column=1, padx=(6, 14), pady=(6, 14), sticky="e")
+    ttk.Button(root, text="Cancel", command=cancel, width=14, style="Secondary.TButton").grid(row=6, column=1, padx=(6, 14), pady=(6, 14), sticky="e")
 
-    version_label = ttk.Label(root, text="v1.6 — każda zmiana w kodzie = nowa wersja", foreground="#9f9f9f")
+    version_label = ttk.Label(root, text="v1.8 — każda zmiana w kodzie = nowa wersja", foreground=ui_style.PALETTE["fg_muted"])
     version_label.grid(row=7, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 8))
 
     root.columnconfigure(0, weight=1)
+    root.columnconfigure(1, weight=0)
     root.mainloop()
 
     if result["filename"] is None and result["folder"] is None:
@@ -154,23 +148,12 @@ def _show_export_progress(output_path, config, selection=None):
     }
 
     root = tk.Tk()
-    root.title("Export Sequence FBX")
-    root.geometry("520x240")
-    root.resizable(False, False)
-    root.configure(bg="#2b2b2b")
-
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except Exception:
-        pass
-    style.configure("TButton", background="#2f7f3f", foreground="white", borderwidth=0)
-    style.configure("TLabel", background="#2b2b2b", foreground="white")
-    style.configure("Horizontal.TProgressbar", troughcolor="#3a3a3a", background="#2f7f3f", bordercolor="#2b2b2b", lightcolor="#5bbf5b", darkcolor="#267226")
+    ui_style.apply_theme(root, title="Export Sequence FBX", min_size=(440, 220))
+    ui_style.apply_geometry(root, 560, 260)
 
     ttk.Label(root, text="Trwa eksport...").pack(padx=16, pady=(18, 8), anchor="w")
     progress = ttk.Progressbar(root, style="Horizontal.TProgressbar", mode="indeterminate", length=472)
-    progress.pack(padx=16, pady=(0, 14))
+    progress.pack(padx=16, pady=(0, 14), fill="x")
     progress.start(10)
 
     status_label = ttk.Label(root, text=status["message"])
@@ -188,7 +171,7 @@ def _show_export_progress(output_path, config, selection=None):
         except Exception as exc:
             unreal.log(f"[exUE5] Could not open debug console: {exc}")
 
-    ttk.Button(button_frame, text="Pokaż logi", command=show_logs, width=16).pack(side="left")
+    ttk.Button(button_frame, text="Pokaż logi", command=show_logs, width=16, style="Secondary.TButton").pack(side="left")
 
     # Capture the current log index so the debug console opened from this
     # progress dialog will show only logs emitted after the export started.
@@ -254,23 +237,12 @@ def _show_camera_export_progress(output_path, config, sequence, camera_binding_i
     }
 
     root = tk.Tk()
-    root.title("Export Camera FBX")
-    root.geometry("520x240")
-    root.resizable(False, False)
-    root.configure(bg="#2b2b2b")
-
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except Exception:
-        pass
-    style.configure("TButton", background="#2f7f3f", foreground="white", borderwidth=0)
-    style.configure("TLabel", background="#2b2b2b", foreground="white")
-    style.configure("Horizontal.TProgressbar", troughcolor="#3a3a3a", background="#2f7f3f", bordercolor="#2b2b2b", lightcolor="#5bbf5b", darkcolor="#267226")
+    ui_style.apply_theme(root, title="Export Camera FBX", min_size=(440, 220))
+    ui_style.apply_geometry(root, 560, 260)
 
     ttk.Label(root, text="Trwa eksport kamery...").pack(padx=16, pady=(18, 8), anchor="w")
     progress = ttk.Progressbar(root, style="Horizontal.TProgressbar", mode="indeterminate", length=472)
-    progress.pack(padx=16, pady=(0, 14))
+    progress.pack(padx=16, pady=(0, 14), fill="x")
     progress.start(10)
 
     status_label = ttk.Label(root, text=status["message"])
@@ -288,7 +260,7 @@ def _show_camera_export_progress(output_path, config, sequence, camera_binding_i
         except Exception as exc:
             unreal.log(f"[exUE5] Could not open camera debug console: {exc}")
 
-    ttk.Button(button_frame, text="Pokaż logi", command=show_logs, width=16).pack(side="left")
+    ttk.Button(button_frame, text="Pokaż logi", command=show_logs, width=16, style="Secondary.TButton").pack(side="left")
 
     try:
         start_log_index = get_log_index()

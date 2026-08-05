@@ -4,69 +4,47 @@ except Exception:
     from spawnable_diagnostics import _format_binding_id
 
 
-def _classify_binding(name, is_spawnable):
-    import re
-    # Normalize to a lower-case, alphanumeric+space representation to avoid
-    # accidental token mismatches caused by punctuation, newlines, or object
-    # metadata strings coming from engine objects.
-    try:
-        name_text = str(name)
-    except Exception:
-        name_text = ""
-    name_lower = name_text.lower()
-    norm = re.sub(r"[^0-9a-z\s]", " ", name_lower)
+# ---------------------------------------------------------------------------
+# Klasyfikacja bindingów.
+#
+# Uproszczone do trzech grup (patrz show_selection_dialog):
+#   - Face  -- zawsze eksportowana, nie da się jej odznaczyć w GUI
+#   - Body  -- zawsze eksportowana, nie da się jej odznaczyć w GUI
+#   - Inne  -- wszystko pozostałe (Control Rig, Blueprinty, nierozpoznane
+#              bindingi); jedyna grupa z checkboxami, chowana domyślnie za
+#              rozwijanym nagłówkiem i sortowana alfabetycznie
+#
+# Kamery NIE trafiają tutaj w ogóle -- mają własne okno EXPORT CAMERA
+# (camera_dialog.py) i są odfiltrowywane z tej listy przez
+# _is_camera_only_name w show_selection_dialog, tak jak wcześniej.
+# ---------------------------------------------------------------------------
 
-    camera_tokens = ("camera", "cam", "sensor", "focal", "focus", "aperture", "filmback", "film back", "lens", "focal length", "kam")
-    face_tokens = ("face", "blendshape", "blend shape", "blend", "morph", "jaw", "eye", "eyebrow", "lip", "mouth")
-    body_tokens = ("body", "bone", "skeleton", "metahuman", "mesh", "character", "spine", "hip", "chest")
-    control_tokens = ("controlrig", "control rig", "rig")
-
-    if name_lower.startswith("bp_") or " bp_" in name_lower or "br_1real" in name_lower:
-        category = "BP"
-    elif any(token in norm for token in face_tokens):
-        category = "Face"
-    elif any(token in norm for token in body_tokens):
-        category = "Body"
-    elif any(token in norm for token in camera_tokens):
-        category = "Camera"
-    elif any(token in norm for token in control_tokens):
-        category = "Control Rig"
-    else:
-        category = "Inne"
-
-    if is_spawnable:
-        category += "  (Spawnable)"
-    # Emit a temporary debug log so the classification can be diagnosed in-editor.
-    try:
-        from .debug_console import push_log
-    except Exception:
-        try:
-            from debug_console import push_log
-        except Exception:
-            push_log = None
-
-    if push_log:
-        try:
-            push_log(f"CLASSIFY: '{name_text}' -> {category}", level="INFO")
-        except Exception:
-            pass
-
-    return category
+def _binding_looks_like_body(name):
+    lowered = (name or "").lower()
+    return any(token in lowered for token in (
+        "body", "metahuman", "pelvis", "spine", "clavicle", "neck", "head",
+        "upperarm", "lowerarm", "hand", "armature", "skeleton", "root"
+    ))
 
 
-def _sort_priority(name, is_spawnable=False):
-    category = _classify_binding(name, is_spawnable)
-    if category == "BP":
-        return (-2, name.lower())
-    if category.startswith("Face"):
-        return (-1, name.lower())
-    if category.startswith("Body"):
-        return (1, name.lower())
-    if category.startswith("Camera"):
-        return (3, name.lower())
-    if category.startswith("Control Rig"):
-        return (4, name.lower())
-    return (5, name.lower())
+def _binding_looks_like_face(name):
+    lowered = (name or "").lower()
+    return any(token in lowered for token in (
+        "face", "facial", "jaw", "lip", "brow", "mouth", "cheek", "nose",
+        "eye", "blendshape", "morph", "teeth", "cartilage"
+    ))
+
+
+def _classify_binding(name):
+    """Zwraca "Face", "Body" albo "Inne" -- patrz komentarz na górze pliku.
+    Face sprawdzana jest przed Body celowo (tak jak w oryginalnej wersji),
+    bo część tokenów (np. "head") mogłaby inaczej trafić w złą kategorię
+    dla bindingów opisujących mimikę twarzy."""
+    if _binding_looks_like_face(name):
+        return "Face"
+    if _binding_looks_like_body(name):
+        return "Body"
+    return "Inne"
 
 
 def resolve_selected_targets(items, selection, id_getter, label_getter):
@@ -133,9 +111,32 @@ def _dialog_log(message, level="INFO"):
     print(formatted)
 
 
+def _is_camera_only_name(name):
+    if not name:
+        return False
+    normalized = name.lower()
+    if "br_1real" in normalized:
+        return False
+    camera_tokens = ("camera", "cam", "sensor", "focal", "focus", "aperture", "filmback", "film back", "lens", "focal length", "kam")
+    face_tokens = ("face", "blendshape", "blend shape", "blend", "morph", "jaw", "eye", "eyebrow", "lip", "mouth")
+    body_tokens = ("body", "bone", "skeleton", "metahuman", "mesh", "character", "spine", "hip", "chest")
+    if any(token in normalized for token in camera_tokens):
+        if any(token in normalized for token in face_tokens):
+            return False
+        if any(token in normalized for token in body_tokens):
+            return False
+        return True
+    return False
+
+
 def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_fn=None, spawnable_ids=None):
     import tkinter as tk
     from tkinter import ttk
+
+    try:
+        from exUE5 import ui_style
+    except ModuleNotFoundError:
+        import ui_style
 
     # Lightweight tooltip helper for Tkinter widgets. Keeps UI dependency
     # local to this dialog so the rest of the plugin doesn't import Tk.
@@ -156,7 +157,7 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
                 self.tipwindow = tw = tk.Toplevel(self.widget)
                 tw.wm_overrideredirect(True)
                 tw.wm_geometry(f"+{x}+{y}")
-                label = tk.Label(tw, text=self.text, justify='left', background="#ffffe0", relief='solid', borderwidth=1, font=("Segoe UI", 8))
+                label = tk.Label(tw, text=self.text, justify='left', background="#2e2e33", foreground="#e8e8ea", relief='solid', borderwidth=1, font=ui_style.FONTS["small"])
                 label.pack(ipadx=4, ipady=2)
             except Exception:
                 self.tipwindow = None
@@ -172,180 +173,186 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
     spawnable_ids = spawnable_ids or set()
     if get_binding_id_fn is None:
         get_binding_id_fn = lambda item: _format_binding_id(getattr(item, "binding_id", None)) or ""
+
     root = tk.Tk()
-    root.title("Wybierz elementy do eksportu")
-    root.geometry("560x520")
-    root.configure(bg="#2b2b2b")
+    ui_style.apply_theme(root, title="Wybierz elementy do eksportu", min_size=(460, 380))
+    ui_style.apply_geometry(root, 600, 560)
 
-    result = {"cancelled": True, "binding_names": set(), "track_names": set(), "merge_body_face": False}
+    result = {"cancelled": True, "binding_ids": set(), "binding_names": set()}
 
-    top_frame = tk.Frame(root, bg="#2b2b2b")
-    top_frame.pack(fill="x", padx=10, pady=(10, 6))
+    # --- Sklasyfikuj bindingi: kamery odpadają całkowicie (mają własne okno
+    # EXPORT CAMERA), Face/Body trafiają do grup zawsze-eksportowanych,
+    # wszystko inne trafia do rozwijanej, alfabetycznej listy "Inne". ---
+    face_items = []
+    body_items = []
+    other_items = []
 
-    merge_var = tk.BooleanVar(value=False)
-    merge_checkbox = tk.Checkbutton(
-        top_frame,
-        text="Połącz Body + Face przed eksportem",
-        variable=merge_var,
-        bg="#2b2b2b",
-        fg="white",
-        selectcolor="#2b2b2b",
-        anchor="w",
-        state="normal",
+    for binding in (bindings or []):
+        name = get_display_name_fn(binding)
+        if _is_camera_only_name(name):
+            continue
+        bid = get_binding_id_fn(binding) or ""
+        category = _classify_binding(name)
+        entry = (bid, name, bid in spawnable_ids)
+        if category == "Face":
+            face_items.append(entry)
+        elif category == "Body":
+            body_items.append(entry)
+        else:
+            other_items.append(entry)
+
+    face_items.sort(key=lambda e: e[1].lower())
+    body_items.sort(key=lambda e: e[1].lower())
+    other_items.sort(key=lambda e: e[1].lower())
+
+    _dialog_log(
+        f"selection_dialog_classified face={len(face_items)} body={len(body_items)} "
+        f"inne={len(other_items)} (tracks input ignored -- Tracki section removed)",
+        level="INFO",
     )
-    merge_checkbox.pack(fill="x")
 
-    def _binding_looks_like_body(name):
-        lowered = (name or "").lower()
-        return any(token in lowered for token in (
-            "body", "metahuman", "pelvis", "spine", "clavicle", "neck", "head",
-            "upperarm", "lowerarm", "hand", "armature", "skeleton", "root"
-        ))
+    # --- Nagłówek: Face/Body są zawsze w eksporcie, bez checkboxów. ---
+    header_frame = ui_style.frame(root)
+    header_frame.pack(fill="x", padx=12, pady=(12, 4))
 
-    def _binding_looks_like_face(name):
-        lowered = (name or "").lower()
-        return any(token in lowered for token in (
-            "face", "facial", "jaw", "lip", "brow", "mouth", "cheek", "nose",
-            "eye", "blendshape", "morph", "teeth", "cartilage"
-        ))
+    ui_style.label(
+        header_frame,
+        text="Face i Body są eksportowane automatycznie (nie da się ich odznaczyć).",
+        muted=True,
+    ).pack(anchor="w")
 
-    list_width = 500
-    list_height = 360
+    auto_frame = ui_style.frame(root)
+    auto_frame.pack(fill="x", padx=12, pady=(6, 0))
 
-    canvas = tk.Canvas(root, bg="#2b2b2b", highlightthickness=0, width=list_width, height=list_height)
-    scrollbar = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
-    frame = tk.Frame(canvas, bg="#2b2b2b", width=list_width)
-    # NOTE: previously called frame.pack_propagate(False) here with only
-    # `width` set (no `height`). That locks the frame to its default,
-    # near-zero requested height instead of letting it grow to fit the
-    # packed binding/track checkboxes -- so every checkbox was created
-    # correctly in memory but rendered invisible (blank canvas below the
-    # "Połącz Body + Face" checkbox). The canvas above already provides the
-    # fixed-size "viewport" (list_width x list_height); this inner frame
-    # must be left free to size itself naturally so canvas.bbox("all") in
-    # the <Configure> handler below computes a correct scrollregion.
-    frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-    canvas.create_window((0, 0), window=frame, anchor="nw", width=list_width)
-    canvas.configure(yscrollcommand=scrollbar.set)
-    canvas.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 8))
-    scrollbar.pack(side="right", fill="y", pady=(0, 8))
-    root.update_idletasks()
+    def _auto_group_row(parent, label_text, items):
+        ui_style.section_label(parent, label_text, count=len(items)).pack(anchor="w", pady=(4, 2))
+        if items:
+            names = ", ".join(name for _, name, _ in items)
+            names_label = ui_style.label(parent, text=names, muted=True)
+            names_label.configure(wraplength=ui_style.scaled(root, 560), justify="left")
+            names_label.pack(anchor="w", pady=(0, 2))
+        else:
+            ui_style.label(parent, text="(brak w tej sekwencji)", muted=True).pack(anchor="w", pady=(0, 2))
 
-    binding_vars = {}
-    binding_list_preview = []
-    def _is_camera_only_name(name):
-        if not name:
-            return False
-        normalized = name.lower()
-        if "br_1real" in normalized:
-            return False
-        camera_tokens = ("camera", "cam", "sensor", "focal", "focus", "aperture", "filmback", "film back", "lens", "focal length", "kam")
-        face_tokens = ("face", "blendshape", "blend shape", "blend", "morph", "jaw", "eye", "eyebrow", "lip", "mouth")
-        body_tokens = ("body", "bone", "skeleton", "metahuman", "mesh", "character", "spine", "hip", "chest")
-        if any(token in normalized for token in camera_tokens):
-            if any(token in normalized for token in face_tokens):
-                return False
-            if any(token in normalized for token in body_tokens):
-                return False
-            return True
-        return False
+    _auto_group_row(auto_frame, "Body", body_items)
+    _auto_group_row(auto_frame, "Face", face_items)
 
-    if bindings:
-        tk.Label(frame, text="Bindingi:", bg="#2b2b2b", fg="white", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
-        filtered_bindings = [b for b in bindings if not _is_camera_only_name(get_display_name_fn(b))]
-        sorted_bindings = sorted(
-            filtered_bindings,
-            key=lambda item: _sort_priority(get_display_name_fn(item), get_binding_id_fn(item) in spawnable_ids),
-        )
-        for index, binding in enumerate(sorted_bindings):
-            name = get_display_name_fn(binding)
-            bid = get_binding_id_fn(binding) or ""
-            binding_list_preview.append((bid, name, bid in spawnable_ids))
-            is_spawn = bid in spawnable_ids
+    ui_style.divider(root).pack(fill="x", padx=12, pady=(10, 8))
+
+    # --- "Inne" -- jedyna rozwijana, wyboru-wymagająca kategoria, zawsze
+    # posortowana alfabetycznie. Zwinięta domyślnie; klik nagłówka pokazuje
+    # zawartość. ---
+    inne_header_frame = ui_style.frame(root)
+    inne_header_frame.pack(fill="x", padx=12)
+
+    inne_expanded = tk.BooleanVar(value=False)
+
+    def _inne_header_text():
+        arrow = "\u25bc" if inne_expanded.get() else "\u25b6"
+        return f"{arrow}  Inne  ({len(other_items)})"
+
+    inne_toggle_btn = ui_style.button(
+        inne_header_frame,
+        text=_inne_header_text(),
+        command=lambda: _toggle_inne(),
+        primary=False,
+    )
+    inne_toggle_btn.configure(anchor="w")
+    inne_toggle_btn.pack(fill="x")
+
+    list_width = 560
+    list_height = 260
+
+    inne_list_wrap = ui_style.frame(root)
+
+    inne_canvas = ui_style.canvas(
+        inne_list_wrap,
+        width=ui_style.scaled(root, list_width),
+        height=ui_style.scaled(root, list_height),
+        bg=ui_style.PALETTE["bg_elevated"],
+    )
+    inne_scrollbar = ttk.Scrollbar(inne_list_wrap, orient="vertical", command=inne_canvas.yview)
+    inne_frame = ui_style.frame(inne_canvas, width=ui_style.scaled(root, list_width), bg=ui_style.PALETTE["bg_elevated"])
+    inne_frame.bind("<Configure>", lambda e: inne_canvas.configure(scrollregion=inne_canvas.bbox("all")))
+    inne_canvas.create_window((0, 0), window=inne_frame, anchor="nw", width=ui_style.scaled(root, list_width))
+    inne_canvas.configure(yscrollcommand=inne_scrollbar.set)
+
+    def _on_inne_mousewheel(event):
+        inne_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    inne_canvas.bind("<Enter>", lambda _e: inne_canvas.bind_all("<MouseWheel>", _on_inne_mousewheel))
+    inne_canvas.bind("<Leave>", lambda _e: inne_canvas.unbind_all("<MouseWheel>"))
+
+    def _toggle_inne():
+        inne_expanded.set(not inne_expanded.get())
+        inne_toggle_btn.configure(text=_inne_header_text())
+        if inne_expanded.get():
+            inne_list_wrap.pack(fill="both", expand=True, padx=12, pady=(6, 8))
+            inne_canvas.pack(side="left", fill="both", expand=True)
+            inne_scrollbar.pack(side="right", fill="y")
+        else:
+            inne_canvas.pack_forget()
+            inne_scrollbar.pack_forget()
+            inne_list_wrap.pack_forget()
+
+    inne_vars = {}
+
+    if other_items:
+        for index, (bid, name, is_spawn) in enumerate(other_items):
             var = tk.BooleanVar(value=True)
-            # Use a unique internal key to preserve duplicate binding IDs or
-            # duplicate display names without overwriting previous entries.
+            # Unique internal key so duplicate binding ids/names don't
+            # collide and overwrite each other's checkbox state.
             key = f"{bid}:{index}"
-            binding_vars[key] = (var, name, bid)
-            label = f"{name}   [{_classify_binding(name, is_spawn)}]"
-            cb = tk.Checkbutton(frame, text=label, variable=var, bg="#2b2b2b", fg="white", selectcolor="#2b2b2b", anchor="w")
-            cb.pack(fill="x")
-            # Attach a tooltip showing the binding id for easier debugging.
+            inne_vars[key] = (var, name, bid)
+            suffix = "  (Spawnable)" if is_spawn else ""
+            cb = ui_style.checkbutton(inne_frame, text=f"{name}{suffix}", variable=var, bg=ui_style.PALETTE["bg_elevated"])
+            cb.pack(fill="x", padx=6, pady=1)
             try:
                 _ToolTip(cb, f"binding_id: {bid}")
             except Exception:
                 pass
-        _dialog_log(
-            f"selection_dialog_bindings_preview count={len(binding_list_preview)} "
-            f"binding_preview={binding_list_preview}",
-            level="INFO",
-        )
     else:
-        tk.Label(frame, text="Brak bindingów w aktywnej sekwencji.", bg="#2b2b2b", fg="#d0d0d0", font=("Segoe UI", 10)).pack(anchor="w", pady=(8, 4))
-
-    track_vars = {}
-    if tracks:
-        tk.Label(frame, text="Tracki:", bg="#2b2b2b", fg="white", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 4))
-        filtered_tracks = [t for t in tracks if not _is_camera_only_name(get_display_name_fn(t))]
-        sorted_tracks = sorted(filtered_tracks, key=lambda item: get_display_name_fn(item).lower())
-        for index, track in enumerate(sorted_tracks):
-            name = get_display_name_fn(track)
-            var = tk.BooleanVar(value=True)
-            key = f"{name}:{index}"
-            track_vars[key] = (var, name)
-            tk.Checkbutton(frame, text=name, variable=var, bg="#2b2b2b", fg="white", selectcolor="#2b2b2b", anchor="w").pack(fill="x")
-    else:
-        tk.Label(frame, text="Brak tracków do eksportu.", bg="#2b2b2b", fg="#d0d0d0", font=("Segoe UI", 10)).pack(anchor="w", pady=(8, 4))
-
-    def _refresh_merge_enabled_state():
-        selected_ids = {binding_id for _, (var, name, binding_id) in binding_vars.items() if var.get()}
-        selected_names = {name for _, (var, name, binding_id) in binding_vars.items() if var.get()}
-        has_body = any(_binding_looks_like_body(name) for name in selected_names)
-        has_face = any(_binding_looks_like_face(name) for name in selected_names)
-        _dialog_log(
-            f"selection_refresh selected_ids={sorted(selected_ids)} selected_names={sorted(selected_names)} "
-            f"has_body={has_body} has_face={has_face} merge_checkbox_enabled={True}",
-            level="INFO",
+        ui_style.label(inne_frame, text="Brak innych bindingów.", muted=True, bg=ui_style.PALETTE["bg_elevated"]).pack(
+            anchor="w", padx=6, pady=(6, 4)
         )
-        # Keep the checkbox available for explicit manual use. Runtime validation
-        # still prevents unsafe merge attempts when the actual Body + Face
-        # selection is not present.
-        merge_checkbox.configure(state="normal")
-        if not has_body or not has_face:
-            merge_var.set(False)
-        _update_confirm_state()
 
-    for bid, (var, name, binding_id) in binding_vars.items():
-        var.trace_add("write", lambda *args, _refresh_merge_enabled_state=_refresh_merge_enabled_state: _refresh_merge_enabled_state())
-
-    button_frame = tk.Frame(root, bg="#2b2b2b")
-    button_frame.pack(fill="x", padx=10, pady=(0, 10))
+    # --- Dolny pasek przycisków ---
+    button_frame = ui_style.frame(root)
+    button_frame.pack(fill="x", padx=12, pady=(4, 12), side="bottom")
 
     def select_all(value):
-        for entry in list(binding_vars.values()):
-            var = entry[0]
+        for var, _, _ in list(inne_vars.values()):
             var.set(value)
-        for var, _ in list(track_vars.values()):
-            var.set(value)
+        _update_confirm_state()
 
     def _update_confirm_state():
-        selected_ids = {binding_id for _, (var, name, binding_id) in binding_vars.items() if var.get()}
-        confirm_button.config(state="normal" if selected_ids else "disabled")
+        selected_inne = sum(1 for var, _, _ in inne_vars.values() if var.get())
+        total = len(face_items) + len(body_items) + selected_inne
+        confirm_button.config(state="normal" if total else "disabled")
+
+    for _, (var, _, _) in inne_vars.items():
+        var.trace_add("write", lambda *args: _update_confirm_state())
 
     def confirm():
         result["cancelled"] = False
-        # Filter out empty/falsy binding IDs to avoid the empty-string collision
-        # bug where multiple bindings without a usable binding_id all match "".
-        result["binding_ids"] = {binding_id for _, (var, name, binding_id) in binding_vars.items() if var.get() and binding_id}
-        result["binding_names"] = {name for _, (var, name, binding_id) in binding_vars.items() if var.get()}
-        result["track_names"] = {name for _, name in track_vars.values() if _.get()}
-        result["merge_body_face"] = bool(merge_var.get() and merge_checkbox.cget("state") != "disabled")
+        binding_ids = set()
+        binding_names = set()
+        for bid, name, _is_spawn in face_items + body_items:
+            binding_names.add(name)
+            if bid:
+                binding_ids.add(bid)
+        for _, (var, name, bid) in inne_vars.items():
+            if var.get():
+                binding_names.add(name)
+                if bid:
+                    binding_ids.add(bid)
+        result["binding_ids"] = binding_ids
+        result["binding_names"] = binding_names
         _dialog_log(
             f"selection_confirm selected_binding_ids={sorted(result['binding_ids'])} "
             f"selected_binding_names={sorted(result['binding_names'])} "
-            f"selected_track_names={sorted(result['track_names'])} merge_body_face={result['merge_body_face']} "
-            f"available_binding_ids={[bid for bid, _, _ in binding_list_preview]}"
-            f" available_display_names={[name for _, name, _ in binding_list_preview]}",
+            f"(auto face={len(face_items)} body={len(body_items)}, inne_selected="
+            f"{sum(1 for var, _, _ in inne_vars.values() if var.get())}/{len(inne_vars)})",
             level="INFO",
         )
         root.quit()
@@ -355,19 +362,19 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
         root.quit()
         root.destroy()
 
-    tk.Button(button_frame, text="Zaznacz wszystko", command=lambda: select_all(True)).pack(side="left")
-    tk.Button(button_frame, text="Odznacz wszystko", command=lambda: select_all(False)).pack(side="left", padx=6)
-    confirm_button = tk.Button(button_frame, text="Eksportuj wybrane", command=confirm)
+    ui_style.button(button_frame, text="Zaznacz wszystko (Inne)", command=lambda: select_all(True), primary=False).pack(side="left")
+    ui_style.button(button_frame, text="Odznacz wszystko (Inne)", command=lambda: select_all(False), primary=False).pack(side="left", padx=6)
+    confirm_button = ui_style.button(button_frame, text="Eksportuj wybrane", command=confirm, primary=True)
     confirm_button.pack(side="right")
-    tk.Button(button_frame, text="Anuluj", command=cancel).pack(side="right", padx=6)
+    ui_style.button(button_frame, text="Anuluj", command=cancel, primary=False).pack(side="right", padx=6)
 
     _update_confirm_state()
 
     root.protocol("WM_DELETE_WINDOW", cancel)
 
     _dialog_log(
-        f"selection_dialog rendered {len(binding_vars)} binding checkboxes, "
-        f"{len(track_vars)} track checkboxes",
+        f"selection_dialog rendered face={len(face_items)} (auto) body={len(body_items)} (auto) "
+        f"inne={len(inne_vars)} (collapsed, alphabetical)",
         level="INFO",
     )
 
@@ -376,6 +383,4 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
     return None if result["cancelled"] else {
         "binding_ids": result.get("binding_ids", set()),
         "binding_names": result.get("binding_names", set()),
-        "track_names": result["track_names"],
-        "merge_body_face": result.get("merge_body_face", False),
     }

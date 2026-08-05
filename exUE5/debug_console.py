@@ -38,11 +38,16 @@ class DebugConsoleWindow:
     def __init__(self, master=None, since_index=None):
         import tkinter as tk
 
+        try:
+            from exUE5 import ui_style
+        except ModuleNotFoundError:
+            import ui_style
+
         self._own_root = master is None
         self.root = tk.Toplevel(master) if master else tk.Tk()
-        self.root.title("PLUGSY Exporter -- Debug Console")
-        self.root.geometry("760x420")
-        self.root.configure(bg="#1e1e1e")
+        ui_style.apply_theme(self.root, title="PLUGSY Exporter -- Debug Console", min_size=(520, 300))
+        ui_style.apply_geometry(self.root, 820, 460)
+        self._ui = ui_style
 
         if since_index is None:
             self._last_index = len(_LOG_BUFFER)
@@ -53,35 +58,35 @@ class DebugConsoleWindow:
             self._last_index = max(0, min(since_index, total))
         self._paused = False
 
-        toolbar = tk.Frame(self.root, bg="#1e1e1e")
-        toolbar.pack(fill="x", padx=8, pady=(8, 4))
+        toolbar = ui_style.frame(self.root)
+        toolbar.pack(fill="x", padx=10, pady=(10, 6))
 
         self.pause_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
+        ui_style.checkbutton(
             toolbar,
             text="Pauza autoscroll",
             variable=self.pause_var,
-            bg="#1e1e1e",
-            fg="white",
-            selectcolor="#1e1e1e",
             command=self._toggle_pause,
         ).pack(side="left")
 
-        tk.Button(toolbar, text="Wyczyść", command=self._clear).pack(side="left", padx=6)
-        tk.Button(toolbar, text="Zapisz do pliku", command=self._save_to_file).pack(side="left")
+        ui_style.button(toolbar, text="Wyczyść", command=self._clear, primary=False).pack(side="left", padx=6)
+        ui_style.button(toolbar, text="Zapisz do pliku", command=self._save_to_file, primary=False).pack(side="left")
 
         self.text = tk.Text(
             self.root,
-            bg="#111111",
+            bg=ui_style.PALETTE["console_bg"],
             fg="#d4d4d4",
             insertbackground="white",
-            font=("Consolas", 9),
+            font=ui_style.FONTS["mono"],
             state="disabled",
             wrap="none",
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=ui_style.PALETTE["border"],
         )
-        self.text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        self.text.tag_config("WARNING", foreground="#e0c341")
-        self.text.tag_config("ERROR", foreground="#e05555")
+        self.text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.text.tag_config("WARNING", foreground=ui_style.PALETTE["warning"])
+        self.text.tag_config("ERROR", foreground=ui_style.PALETTE["error"])
 
         self._poll()
 

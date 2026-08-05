@@ -27,6 +27,28 @@ except ModuleNotFoundError:
         get_world = None
 
 
+def _is_camera_component_name(name):
+    """CameraComponent to podobiekt (sub-object) aktora kamery -- ten sam
+    binding co "właściwa" kamera, tylko na poziomie komponentu zamiast
+    aktora. Sequencer czasem wystawia go jako osobny binding obok bindingu
+    aktora, co w oknie EXPORT CAMERA dawało duplikat ("MojaKamera" i
+    "CameraComponent" jako dwie oddzielne, mylące pozycje), a jeśli
+    użytkownik zaznaczył samą CameraComponent bez aktora-rodzica, eksport
+    kończył się osieroconym komponentem bez transformu.
+
+    Dlatego CameraComponent jest wykluczana CAŁKOWICIE i wcześnie: nie
+    trafia do listy w oknie (patrz _is_camera_binding), a na wszelki
+    wypadek jest też odrzucana bezpośrednio w miejscach, które faktycznie
+    rozwiązują bindingi do eksportu (_resolve_camera_bindings /
+    _resolve_camera_actors), gdyby kiedykolwiek trafiła tam inną drogą niż
+    ta lista.
+    """
+    if not name:
+        return False
+    normalized = "".join(ch for ch in str(name).lower() if ch.isalnum())
+    return normalized == "cameracomponent" or normalized.startswith("cameracomponent")
+
+
 def _is_camera_binding(binding):
     if binding is None:
         return False
@@ -35,6 +57,8 @@ def _is_camera_binding(binding):
     except Exception:
         name = str(binding)
     if not name:
+        return False
+    if _is_camera_component_name(name):
         return False
     lowered = str(name).lower()
     tokens = (
@@ -105,6 +129,9 @@ def _resolve_camera_bindings(sequence, camera_binding_ids):
         bid = _format_binding_id(raw_binding_id) or ""
         raw_bid_str = str(raw_binding_id) if raw_binding_id is not None else ""
         name = _get_display_name(binding)
+        if _is_camera_component_name(name):
+            unreal.log(f"[exUE5][FLOW] camera_export excluding CameraComponent sub-binding '{name}' (never captured)")
+            continue
         if bid in normalized_camera_binding_ids or raw_bid_str in normalized_camera_binding_ids or name in normalized_camera_binding_ids:
             bindings.append(binding)
             unreal.log(f"[exUE5][FLOW] camera_export matched binding '{name}' id='{bid}'")
@@ -133,6 +160,9 @@ def _resolve_camera_actors(sequence, camera_binding_ids):
         bid = _format_binding_id(raw_binding_id) or ""
         raw_bid_str = str(raw_binding_id) if raw_binding_id is not None else ""
         name = _get_display_name(binding)
+        if _is_camera_component_name(name):
+            unreal.log(f"[exUE5][FLOW] camera_export (legacy) excluding CameraComponent sub-binding '{name}'")
+            continue
         if bid not in normalized_camera_binding_ids and raw_bid_str not in normalized_camera_binding_ids and name not in normalized_camera_binding_ids:
             continue
         try:
