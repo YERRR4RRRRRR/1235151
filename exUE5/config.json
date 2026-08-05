@@ -1,5 +1,6 @@
 {
   "tool_name": "Export Sequence FBX",
+  "camera_tool_name": "EXPORT CAMERA",
   "default_output_folder": "E:/@9SUKUYOMI/PLUGSY_DO_3D/WORKFLOW9/TU",
   "default_output_filename": "exported_sequence.fbx",
   "show_save_dialog": true,

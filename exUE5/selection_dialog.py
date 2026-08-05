@@ -1,11 +1,6 @@
 try:
-    import unreal
-except ModuleNotFoundError:
-    unreal = None
-
-try:
-    from exUE5.spawnable_diagnostics import _format_binding_id
-except ModuleNotFoundError:
+    from .spawnable_diagnostics import _format_binding_id
+except Exception:
     from spawnable_diagnostics import _format_binding_id
 
 
@@ -26,7 +21,9 @@ def _classify_binding(name, is_spawnable):
     body_tokens = ("body", "bone", "skeleton", "metahuman", "mesh", "character", "spine", "hip", "chest")
     control_tokens = ("controlrig", "control rig", "rig")
 
-    if any(token in norm for token in face_tokens):
+    if name_lower.startswith("bp_") or " bp_" in name_lower or "br_1real" in name_lower:
+        category = "BP"
+    elif any(token in norm for token in face_tokens):
         category = "Face"
     elif any(token in norm for token in body_tokens):
         category = "Body"
@@ -41,13 +38,12 @@ def _classify_binding(name, is_spawnable):
         category += "  (Spawnable)"
     # Emit a temporary debug log so the classification can be diagnosed in-editor.
     try:
-        try:
-            # Prefer package-style import when used as a plugin
-            from exUE5.debug_console import push_log
-        except Exception:
-            from debug_console import push_log
+        from .debug_console import push_log
     except Exception:
-        push_log = None
+        try:
+            from debug_console import push_log
+        except Exception:
+            push_log = None
 
     if push_log:
         try:
@@ -60,15 +56,17 @@ def _classify_binding(name, is_spawnable):
 
 def _sort_priority(name, is_spawnable=False):
     category = _classify_binding(name, is_spawnable)
+    if category == "BP":
+        return (-2, name.lower())
     if category.startswith("Face"):
-        return (0, name.lower())
+        return (-1, name.lower())
     if category.startswith("Body"):
         return (1, name.lower())
     if category.startswith("Camera"):
-        return (2, name.lower())
-    if category.startswith("Control Rig"):
         return (3, name.lower())
-    return (4, name.lower())
+    if category.startswith("Control Rig"):
+        return (4, name.lower())
+    return (5, name.lower())
 
 
 def resolve_selected_targets(items, selection, id_getter, label_getter):
@@ -119,12 +117,12 @@ def resolve_selected_targets(items, selection, id_getter, label_getter):
 
 def _dialog_log(message, level="INFO"):
     try:
-        try:
-            from exUE5.debug_console import push_log
-        except Exception:
-            from debug_console import push_log
+        from .debug_console import push_log
     except Exception:
-        push_log = None
+        try:
+            from debug_console import push_log
+        except Exception:
+            push_log = None
 
     formatted = f"[exUE5][FLOW] {message}"
     if push_log:
@@ -235,10 +233,28 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
 
     binding_vars = {}
     binding_list_preview = []
+    def _is_camera_only_name(name):
+        if not name:
+            return False
+        normalized = name.lower()
+        if "br_1real" in normalized:
+            return False
+        camera_tokens = ("camera", "cam", "sensor", "focal", "focus", "aperture", "filmback", "film back", "lens", "focal length", "kam")
+        face_tokens = ("face", "blendshape", "blend shape", "blend", "morph", "jaw", "eye", "eyebrow", "lip", "mouth")
+        body_tokens = ("body", "bone", "skeleton", "metahuman", "mesh", "character", "spine", "hip", "chest")
+        if any(token in normalized for token in camera_tokens):
+            if any(token in normalized for token in face_tokens):
+                return False
+            if any(token in normalized for token in body_tokens):
+                return False
+            return True
+        return False
+
     if bindings:
         tk.Label(frame, text="Bindingi:", bg="#2b2b2b", fg="white", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
+        filtered_bindings = [b for b in bindings if not _is_camera_only_name(get_display_name_fn(b))]
         sorted_bindings = sorted(
-            bindings,
+            filtered_bindings,
             key=lambda item: _sort_priority(get_display_name_fn(item), get_binding_id_fn(item) in spawnable_ids),
         )
         for index, binding in enumerate(sorted_bindings):
@@ -270,7 +286,8 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
     track_vars = {}
     if tracks:
         tk.Label(frame, text="Tracki:", bg="#2b2b2b", fg="white", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 4))
-        sorted_tracks = sorted(tracks, key=lambda item: get_display_name_fn(item).lower())
+        filtered_tracks = [t for t in tracks if not _is_camera_only_name(get_display_name_fn(t))]
+        sorted_tracks = sorted(filtered_tracks, key=lambda item: get_display_name_fn(item).lower())
         for index, track in enumerate(sorted_tracks):
             name = get_display_name_fn(track)
             var = tk.BooleanVar(value=True)

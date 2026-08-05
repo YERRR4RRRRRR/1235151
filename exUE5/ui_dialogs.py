@@ -234,3 +234,100 @@ def _show_export_progress(output_path, config, selection=None):
     root.after(0, run_export_worker)
     root.after(100, check_status)
     root.mainloop()
+
+
+def _show_camera_export_progress(output_path, config, sequence, camera_binding_ids):
+    try:
+        import threading
+        import tkinter as tk
+        from tkinter import ttk
+    except Exception as exc:
+        if unreal is not None:
+            unreal.log(f"[exUE5] Tkinter camera progress dialog unavailable: {exc}")
+        return
+
+    unreal.log(f"[exUE5] _show_camera_export_progress running")
+    status = {
+        "done": False,
+        "success": False,
+        "message": "Rozpoczynam eksport kamery...",
+    }
+
+    root = tk.Tk()
+    root.title("Export Camera FBX")
+    root.geometry("520x240")
+    root.resizable(False, False)
+    root.configure(bg="#2b2b2b")
+
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+    style.configure("TButton", background="#2f7f3f", foreground="white", borderwidth=0)
+    style.configure("TLabel", background="#2b2b2b", foreground="white")
+    style.configure("Horizontal.TProgressbar", troughcolor="#3a3a3a", background="#2f7f3f", bordercolor="#2b2b2b", lightcolor="#5bbf5b", darkcolor="#267226")
+
+    ttk.Label(root, text="Trwa eksport kamery...").pack(padx=16, pady=(18, 8), anchor="w")
+    progress = ttk.Progressbar(root, style="Horizontal.TProgressbar", mode="indeterminate", length=472)
+    progress.pack(padx=16, pady=(0, 14))
+    progress.start(10)
+
+    status_label = ttk.Label(root, text=status["message"])
+    status_label.pack(padx=16, pady=(0, 12), anchor="w")
+
+    button_frame = ttk.Frame(root, style="TFrame")
+    button_frame.pack(fill="x", padx=16, pady=(0, 14))
+
+    ok_button = ttk.Button(button_frame, text="OK", state="disabled", command=root.destroy, width=16)
+    ok_button.pack(side="right")
+
+    def show_logs():
+        try:
+            open_debug_console(root, since_index=start_log_index)
+        except Exception as exc:
+            unreal.log(f"[exUE5] Could not open camera debug console: {exc}")
+
+    ttk.Button(button_frame, text="Pokaż logi", command=show_logs, width=16).pack(side="left")
+
+    try:
+        start_log_index = get_log_index()
+    except Exception:
+        start_log_index = None
+
+    def check_status():
+        status_label.config(text=status["message"])
+        if status["done"]:
+            progress.stop()
+            ok_button.config(state="normal")
+            if status["success"]:
+                status_label.config(text="Eksport kamery zakończony pomyślnie.")
+            else:
+                status_label.config(text=status["message"])
+        else:
+            root.after(100, check_status)
+
+    def run_camera_export_worker():
+        try:
+            unreal.log(f"[exUE5] run_camera_export_worker started")
+            try:
+                from exUE5.camera_export import export_cameras_fbx
+            except ModuleNotFoundError:
+                from camera_export import export_cameras_fbx
+
+            success = export_cameras_fbx(sequence, camera_binding_ids, output_path, show_dialog=False)
+            status["success"] = bool(success)
+            if status["success"]:
+                status["message"] = "Eksport kamery zakończony pomyślnie."
+            else:
+                status["message"] = "Eksport kamery nie powiódł się. Sprawdź logi."
+        except Exception as exc:
+            status["success"] = False
+            status["message"] = f"Błąd eksportu kamery: {exc}"
+            unreal.log(f"[exUE5] ERROR _show_camera_export_progress: {exc}")
+        finally:
+            status["done"] = True
+
+    root.after(0, run_camera_export_worker)
+    root.after(100, check_status)
+    root.mainloop()

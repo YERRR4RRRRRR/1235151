@@ -656,6 +656,28 @@ def _is_metahuman_face_binding(binding):
     ))
 
 
+def _is_camera_binding(binding):
+    return _binding_matches_name(binding, (
+        "camera", "cam", "sensor", "focal", "focus", "aperture",
+        "filmback", "film back", "lens", "focal length", "kam"
+    ))
+
+
+def _strip_camera_bindings(bindings):
+    kept, removed = [], []
+    for b in bindings:
+        if _is_camera_binding(b):
+            removed.append(b)
+        else:
+            kept.append(b)
+    if removed:
+        _log(
+            "[exUE5][FLOW] camera_excluded_from_main_export "
+            f"count={len(removed)} names={[_get_display_name(b) for b in removed]}"
+        )
+    return kept
+
+
 def _log_runtime_merge_probe(sequence, bindings, selection=None):
     selected_ids = set((selection or {}).get("binding_ids") or []) if selection else set()
     if not selected_ids:
@@ -800,6 +822,8 @@ def build_export_params(sequence, output_path, config=None, selection=None, auto
         _log(f"[exUE5][FLOW] merge_decision=skipped reason={merge_reason}")
 
     _apply_spawnable_auto_fix_if_needed(sequence, bindings, config, auto_fix_state or [])
+    bindings = _strip_camera_bindings(bindings)
+    _log(f"[exUE5][FLOW] after_camera_strip bindings={len(bindings)}")
     _log("[exUE5][FLOW] before_spawnable_check bindings={len(bindings)}")
     flagged_spawnables = _warn_about_spawnable_export_bug(sequence, bindings, all_bindings)
     _log(f"[exUE5][FLOW] after_spawnable_check flagged_spawnables={len(flagged_spawnables)}")

@@ -36,9 +36,19 @@ except ModuleNotFoundError:
     from selection_dialog import show_selection_dialog
 
 try:
-    from exUE5.ui_dialogs import _show_export_dialog, _show_export_progress
+    from exUE5.camera_dialog import show_camera_export_dialog
 except ModuleNotFoundError:
-    from ui_dialogs import _show_export_dialog, _show_export_progress
+    from camera_dialog import show_camera_export_dialog
+
+try:
+    from exUE5.camera_export import _is_camera_binding, export_cameras_fbx
+except ModuleNotFoundError:
+    from camera_export import _is_camera_binding, export_cameras_fbx
+
+try:
+    from exUE5.ui_dialogs import _show_export_dialog, _show_export_progress, _show_camera_export_progress
+except ModuleNotFoundError:
+    from ui_dialogs import _show_export_dialog, _show_export_progress, _show_camera_export_progress
 
 try:
     from exUE5.menu_utils import _log, _try_remove_menu_member, _clear_menu_entries
@@ -80,6 +90,52 @@ def _clear_existing_exporter_menu(menus, main_menu):
 
 
 
+
+
+_camera_export_settings = None
+
+
+def _run_camera_dialog():
+    global _camera_export_settings
+
+    if unreal is None:
+        raise RuntimeError("unreal module not available")
+
+    unreal.log("[exUE5] _run_camera_dialog() started")
+    config = load_config()
+    try:
+        from exUE5.exporter import get_current_sequence
+    except ModuleNotFoundError:
+        from exporter import get_current_sequence
+
+    sequence = get_current_sequence()
+    if not sequence:
+        unreal.log("[exUE5] Brak aktywnej sekwencji dla dialogu kamer")
+        return
+
+    camera_bindings = [b for b in sequence.get_bindings() if _is_camera_binding(b)]
+    filename = getattr(sequence, "get_name", None)
+    if callable(filename):
+        base_name = filename()
+    else:
+        base_name = str(sequence)
+    default_output_path = build_output_path(config=config, filename=f"{base_name}_KAMERA_TRANS.fbx")
+
+    result = show_camera_export_dialog(camera_bindings, _get_display_name, default_output_path)
+    if result is not None:
+        _camera_export_settings = result
+        unreal.log(f"[exUE5] Ustawienia eksportu kamer zapisane: {result}")
+        if result.get("export_cameras"):
+            try:
+                unreal.log("[exUE5] Running camera export with UE5 FBX dialog")
+                export_cameras_fbx(
+                    sequence,
+                    result.get("camera_binding_ids", set()),
+                    result.get("output_path"),
+                    show_dialog=True,
+                )
+            except Exception as exc:
+                unreal.log(f"[exUE5] ERROR Camera export failed from dialog: {exc}")
 
 
 def _run_export():
@@ -135,6 +191,26 @@ def _run_export():
         _show_export_progress(output_path, config, selection=selection)
     except Exception as exc:
         unreal.log(f"[exUE5] ERROR Export failed: {exc}")
+        return
+
+    if _camera_export_settings and _camera_export_settings.get("export_cameras"):
+        unreal.log("[exUE5] Starting camera export after main export")
+        try:
+            from exUE5.exporter import get_current_sequence
+        except ModuleNotFoundError:
+            from exporter import get_current_sequence
+
+        sequence = get_current_sequence()
+        if sequence:
+            try:
+                _show_camera_export_progress(
+                    _camera_export_settings.get("output_path"),
+                    config,
+                    sequence,
+                    _camera_export_settings.get("camera_binding_ids", set()),
+                )
+            except Exception as exc:
+                unreal.log(f"[exUE5] ERROR Camera export failed: {exc}")
 
 
 def _run_diagnose_export():
@@ -229,7 +305,7 @@ def install_menu():
             unreal.log("[exUE5] Removed existing ExportFBX entry from submenu before re-adding")
 
         export_entry = unreal.ToolMenuEntry(name="ExportFBX", type=unreal.MultiBlockType.MENU_ENTRY)
-        export_entry.set_label("Export Sequence FBX")
+        export_entry.set_label(config.get("tool_name", "Export Sequence FBX"))
         export_entry.set_tool_tip("Export current Level Sequence to FBX")
         export_entry.set_string_command(
             unreal.ToolMenuStringCommandType.PYTHON,
@@ -238,6 +314,17 @@ def install_menu():
         )
         exporter_submenu.add_menu_entry("PLUGSY_Exporter", export_entry)
         unreal.log("[exUE5]    OK Entry added to submenu (section='PLUGSY_Exporter', entry name='ExportFBX')")
+
+        camera_entry = unreal.ToolMenuEntry(name="ExportCamera", type=unreal.MultiBlockType.MENU_ENTRY)
+        camera_entry.set_label(config.get("camera_tool_name", "EXPORT CAMERA"))
+        camera_entry.set_tool_tip("Otwórz dialog eksportu kamer")
+        camera_entry.set_string_command(
+            unreal.ToolMenuStringCommandType.PYTHON,
+            "",
+            "from exUE5.menu import _run_camera_dialog; _run_camera_dialog()"
+        )
+        exporter_submenu.add_menu_entry("PLUGSY_Exporter", camera_entry)
+        unreal.log("[exUE5]    OK Entry added to submenu (section='PLUGSY_Exporter', entry name='ExportCamera')")
 
         diagnose_entry = unreal.ToolMenuEntry(name="DiagnoseExport", type=unreal.MultiBlockType.MENU_ENTRY)
         diagnose_entry.set_label("Diagnose Export Issues")

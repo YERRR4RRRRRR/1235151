@@ -117,12 +117,15 @@ def _clear_menu_entries(menu_obj):
             if not entry_name:
                 entry_name = getattr(entry, 'name', None)
             entry_label = _get_menu_entry_label(entry)
-            if entry_name in ('ExportFBX',) or entry_label in ('Export Sequence FBX', 'ExportFBX'):
+            if entry_name in ('ExportFBX', 'ExportCamera') or entry_label in ('Export Sequence FBX', 'ExportFBX', 'Kamera', 'Export Camera', 'EXPORT CAMERA'):
                 remove_name = entry_name or entry_label
                 _log(f"Removing duplicate entry '{remove_name}' (label={entry_label})")
                 _try_remove_menu_member(target_menu, remove_name)
                 _try_remove_menu_member(target_menu, 'ExportFBX')
                 _try_remove_menu_member(target_menu, 'Export Sequence FBX')
+                _try_remove_menu_member(target_menu, 'ExportCamera')
+                _try_remove_menu_member(target_menu, 'Export Camera')
+                _try_remove_menu_member(target_menu, 'EXPORT CAMERA')
 
     if hasattr(menu_obj, 'get_sections'):
         try:

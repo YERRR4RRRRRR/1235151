@@ -48,7 +48,7 @@ def _clear_exporter_section(menu_obj):
         _log(f"Clearing section/member: {section_name}")
         _try_remove_menu_member(menu_obj, section_name)
 
-    for entry_name in ('ExportFBX', 'Export Sequence FBX', 'DiagnoseExport', 'DebugConsole'):
+    for entry_name in ('ExportFBX', 'ExportCamera', 'Export Sequence FBX', 'DiagnoseExport', 'DebugConsole'):
         _log(f"Clearing submenu entry: {entry_name}")
         _try_remove_menu_member(menu_obj, entry_name)
 
