@@ -68,6 +68,26 @@ def load_config(config_path=None):
         return json.load(handle)
 
 
+def save_config(updates, config_path=None):
+    """Dopisuje `updates` do config.json na dysku (np. zapamiętany folder
+    docelowy wybrany w GUI), żeby przetrwało między kolejnymi otwarciami
+    okna i restartami edytora. Nie nadpisuje całego pliku -- wczytuje
+    obecną zawartość i scala z nowymi wartościami."""
+    if config_path is None:
+        config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    try:
+        existing = load_config(config_path)
+    except Exception:
+        existing = {}
+    existing.update(updates or {})
+    try:
+        with open(config_path, "w", encoding="utf-8") as handle:
+            json.dump(existing, handle, indent=2, ensure_ascii=False)
+    except Exception as exc:
+        _log(f"save_config: nie udało się zapisać {config_path}: {exc}")
+    return existing
+
+
 def _try_call(obj, method_names, *args, **kwargs):
     for method_name in method_names:
         method = getattr(obj, method_name, None)
@@ -452,7 +472,10 @@ def _resolve_output_path(output_path, config=None):
         if dialog_path:
             return dialog_path
 
-    filename = config.get("default_output_filename", "exported_sequence.fbx")
+    # config.get(...) z domyślną wartością nie zadziała gdy klucz istnieje,
+    # ale jest pustym stringiem (tak jest teraz w config.json, bo GUI już
+    # nie ma zahardkodowanej nazwy pliku) -- stąd jawny fallback przez `or`.
+    filename = config.get("default_output_filename") or "exported_sequence.fbx"
     return build_output_path(config=config, filename=filename, folder=output_dir)
 
 

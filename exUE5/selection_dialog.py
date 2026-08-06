@@ -19,6 +19,14 @@ except Exception:
 # _is_camera_only_name w show_selection_dialog, tak jak wcześniej.
 # ---------------------------------------------------------------------------
 
+def _binding_looks_like_character(name):
+    """Blueprinty postaci -- BP_REAL, BP_REAL1, BP_REAL2 itd. Sprawdzane
+    PRZED Face/Body, żeby np. "BP_REAL_FACE_CTRL" trafiał do Postacie, a nie
+    do Face."""
+    lowered = (name or "").strip().lower()
+    return lowered.startswith("bp")
+
+
 def _binding_looks_like_body(name):
     lowered = (name or "").lower()
     return any(token in lowered for token in (
@@ -36,10 +44,14 @@ def _binding_looks_like_face(name):
 
 
 def _classify_binding(name):
-    """Zwraca "Face", "Body" albo "Inne" -- patrz komentarz na górze pliku.
-    Face sprawdzana jest przed Body celowo (tak jak w oryginalnej wersji),
-    bo część tokenów (np. "head") mogłaby inaczej trafić w złą kategorię
-    dla bindingów opisujących mimikę twarzy."""
+    """Zwraca "Postacie", "Face", "Body" albo "Inne" -- patrz komentarz na
+    górze pliku. Postacie (BP_*) sprawdzane jest jako pierwsze, żeby
+    blueprinty postaci nigdy nie wpadły do Face/Body/Inne. Face sprawdzana
+    jest przed Body celowo (tak jak w oryginalnej wersji), bo część tokenów
+    (np. "head") mogłaby inaczej trafić w złą kategorię dla bindingów
+    opisujących mimikę twarzy."""
+    if _binding_looks_like_character(name):
+        return "Postacie"
     if _binding_looks_like_face(name):
         return "Face"
     if _binding_looks_like_body(name):
@@ -183,6 +195,7 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
     # --- Sklasyfikuj bindingi: kamery odpadają całkowicie (mają własne okno
     # EXPORT CAMERA), Face/Body trafiają do grup zawsze-eksportowanych,
     # wszystko inne trafia do rozwijanej, alfabetycznej listy "Inne". ---
+    postacie_items = []
     face_items = []
     body_items = []
     other_items = []
@@ -194,54 +207,110 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
         bid = get_binding_id_fn(binding) or ""
         category = _classify_binding(name)
         entry = (bid, name, bid in spawnable_ids)
-        if category == "Face":
+        if category == "Postacie":
+            postacie_items.append(entry)
+        elif category == "Face":
             face_items.append(entry)
         elif category == "Body":
             body_items.append(entry)
         else:
             other_items.append(entry)
 
+    postacie_items.sort(key=lambda e: e[1].lower())
     face_items.sort(key=lambda e: e[1].lower())
     body_items.sort(key=lambda e: e[1].lower())
     other_items.sort(key=lambda e: e[1].lower())
 
     _dialog_log(
-        f"selection_dialog_classified face={len(face_items)} body={len(body_items)} "
-        f"inne={len(other_items)} (tracks input ignored -- Tracki section removed)",
+        f"selection_dialog_classified postacie={len(postacie_items)} face={len(face_items)} "
+        f"body={len(body_items)} inne={len(other_items)} (tracks input ignored -- Tracki section removed)",
         level="INFO",
     )
 
-    # --- Nagłówek: Face/Body są zawsze w eksporcie, bez checkboxów. ---
-    header_frame = ui_style.frame(root)
-    header_frame.pack(fill="x", padx=12, pady=(12, 4))
+    # Body i Face NIE są już pokazywane w GUI (na życzenie) -- dalej trafiają
+    # do eksportu automatycznie (patrz confirm() niżej), po prostu bez
+    # widocznej sekcji/checkboxów w oknie.
 
-    ui_style.label(
-        header_frame,
-        text="Face i Body są eksportowane automatycznie (nie da się ich odznaczyć).",
-        muted=True,
-    ).pack(anchor="w")
+    list_width = 560
+    list_height = 260
 
-    auto_frame = ui_style.frame(root)
-    auto_frame.pack(fill="x", padx=12, pady=(6, 0))
+    # --- "Postacie" -- wszystkie blueprinty BP_* (BP_REAL, BP_REAL1, ...).
+    # Rozwijana, wyboru-wymagająca kategoria, zachowuje się dokładnie tak
+    # samo jak "Inne" poniżej (checkboxy, sortowanie alfabetyczne, zwinięta
+    # domyślnie, własne przyciski zaznacz/odznacz wszystko). ---
+    postacie_header_frame = ui_style.frame(root)
+    postacie_header_frame.pack(fill="x", padx=12, pady=(12, 0))
 
-    def _auto_group_row(parent, label_text, items):
-        ui_style.section_label(parent, label_text, count=len(items)).pack(anchor="w", pady=(4, 2))
-        if items:
-            names = ", ".join(name for _, name, _ in items)
-            names_label = ui_style.label(parent, text=names, muted=True)
-            names_label.configure(wraplength=ui_style.scaled(root, 560), justify="left")
-            names_label.pack(anchor="w", pady=(0, 2))
+    postacie_expanded = tk.BooleanVar(value=False)
+
+    def _postacie_header_text():
+        arrow = "\u25bc" if postacie_expanded.get() else "\u25b6"
+        return f"{arrow}  Postacie  ({len(postacie_items)})"
+
+    postacie_toggle_btn = ui_style.button(
+        postacie_header_frame,
+        text=_postacie_header_text(),
+        command=lambda: _toggle_postacie(),
+        primary=False,
+    )
+    postacie_toggle_btn.configure(anchor="w")
+    postacie_toggle_btn.pack(fill="x")
+
+    postacie_list_wrap = ui_style.frame(root)
+
+    postacie_canvas = ui_style.canvas(
+        postacie_list_wrap,
+        width=ui_style.scaled(root, list_width),
+        height=ui_style.scaled(root, list_height),
+        bg=ui_style.PALETTE["bg_elevated"],
+    )
+    postacie_scrollbar = ttk.Scrollbar(postacie_list_wrap, orient="vertical", command=postacie_canvas.yview)
+    postacie_frame = ui_style.frame(postacie_canvas, width=ui_style.scaled(root, list_width), bg=ui_style.PALETTE["bg_elevated"])
+    postacie_frame.bind("<Configure>", lambda e: postacie_canvas.configure(scrollregion=postacie_canvas.bbox("all")))
+    postacie_canvas.create_window((0, 0), window=postacie_frame, anchor="nw", width=ui_style.scaled(root, list_width))
+    postacie_canvas.configure(yscrollcommand=postacie_scrollbar.set)
+
+    def _on_postacie_mousewheel(event):
+        postacie_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    postacie_canvas.bind("<Enter>", lambda _e: postacie_canvas.bind_all("<MouseWheel>", _on_postacie_mousewheel))
+    postacie_canvas.bind("<Leave>", lambda _e: postacie_canvas.unbind_all("<MouseWheel>"))
+
+    def _toggle_postacie():
+        postacie_expanded.set(not postacie_expanded.get())
+        postacie_toggle_btn.configure(text=_postacie_header_text())
+        if postacie_expanded.get():
+            postacie_list_wrap.pack(fill="both", expand=True, padx=12, pady=(6, 8))
+            postacie_canvas.pack(side="left", fill="both", expand=True)
+            postacie_scrollbar.pack(side="right", fill="y")
         else:
-            ui_style.label(parent, text="(brak w tej sekwencji)", muted=True).pack(anchor="w", pady=(0, 2))
+            postacie_canvas.pack_forget()
+            postacie_scrollbar.pack_forget()
+            postacie_list_wrap.pack_forget()
 
-    _auto_group_row(auto_frame, "Body", body_items)
-    _auto_group_row(auto_frame, "Face", face_items)
+    postacie_vars = {}
+
+    if postacie_items:
+        for index, (bid, name, is_spawn) in enumerate(postacie_items):
+            var = tk.BooleanVar(value=True)
+            key = f"{bid}:{index}"
+            postacie_vars[key] = (var, name, bid)
+            suffix = "  (Spawnable)" if is_spawn else ""
+            cb = ui_style.checkbutton(postacie_frame, text=f"{name}{suffix}", variable=var, bg=ui_style.PALETTE["bg_elevated"])
+            cb.pack(fill="x", padx=6, pady=1)
+            try:
+                _ToolTip(cb, f"binding_id: {bid}")
+            except Exception:
+                pass
+    else:
+        ui_style.label(postacie_frame, text="Brak postaci (BP_*) w tej sekwencji.", muted=True, bg=ui_style.PALETTE["bg_elevated"]).pack(
+            anchor="w", padx=6, pady=(6, 4)
+        )
 
     ui_style.divider(root).pack(fill="x", padx=12, pady=(10, 8))
 
-    # --- "Inne" -- jedyna rozwijana, wyboru-wymagająca kategoria, zawsze
-    # posortowana alfabetycznie. Zwinięta domyślnie; klik nagłówka pokazuje
-    # zawartość. ---
+    # --- "Inne" -- jedyna pozostała rozwijana kategoria, zawsze posortowana
+    # alfabetycznie. Zwinięta domyślnie; klik nagłówka pokazuje zawartość. ---
     inne_header_frame = ui_style.frame(root)
     inne_header_frame.pack(fill="x", padx=12)
 
@@ -259,9 +328,6 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
     )
     inne_toggle_btn.configure(anchor="w")
     inne_toggle_btn.pack(fill="x")
-
-    list_width = 560
-    list_height = 260
 
     inne_list_wrap = ui_style.frame(root)
 
@@ -320,17 +386,26 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
     button_frame = ui_style.frame(root)
     button_frame.pack(fill="x", padx=12, pady=(4, 12), side="bottom")
 
-    def select_all(value):
+    def select_all_inne(value):
         for var, _, _ in list(inne_vars.values()):
+            var.set(value)
+        _update_confirm_state()
+
+    def select_all_postacie(value):
+        for var, _, _ in list(postacie_vars.values()):
             var.set(value)
         _update_confirm_state()
 
     def _update_confirm_state():
         selected_inne = sum(1 for var, _, _ in inne_vars.values() if var.get())
-        total = len(face_items) + len(body_items) + selected_inne
+        selected_postacie = sum(1 for var, _, _ in postacie_vars.values() if var.get())
+        total = len(face_items) + len(body_items) + selected_inne + selected_postacie
         confirm_button.config(state="normal" if total else "disabled")
 
     for _, (var, _, _) in inne_vars.items():
+        var.trace_add("write", lambda *args: _update_confirm_state())
+
+    for _, (var, _, _) in postacie_vars.items():
         var.trace_add("write", lambda *args: _update_confirm_state())
 
     def confirm():
@@ -346,13 +421,19 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
                 binding_names.add(name)
                 if bid:
                     binding_ids.add(bid)
+        for _, (var, name, bid) in postacie_vars.items():
+            if var.get():
+                binding_names.add(name)
+                if bid:
+                    binding_ids.add(bid)
         result["binding_ids"] = binding_ids
         result["binding_names"] = binding_names
         _dialog_log(
             f"selection_confirm selected_binding_ids={sorted(result['binding_ids'])} "
             f"selected_binding_names={sorted(result['binding_names'])} "
-            f"(auto face={len(face_items)} body={len(body_items)}, inne_selected="
-            f"{sum(1 for var, _, _ in inne_vars.values() if var.get())}/{len(inne_vars)})",
+            f"(auto face={len(face_items)} body={len(body_items)}, postacie_selected="
+            f"{sum(1 for var, _, _ in postacie_vars.values() if var.get())}/{len(postacie_vars)}, "
+            f"inne_selected={sum(1 for var, _, _ in inne_vars.values() if var.get())}/{len(inne_vars)})",
             level="INFO",
         )
         root.quit()
@@ -362,8 +443,10 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
         root.quit()
         root.destroy()
 
-    ui_style.button(button_frame, text="Zaznacz wszystko (Inne)", command=lambda: select_all(True), primary=False).pack(side="left")
-    ui_style.button(button_frame, text="Odznacz wszystko (Inne)", command=lambda: select_all(False), primary=False).pack(side="left", padx=6)
+    ui_style.button(button_frame, text="Zaznacz (Postacie)", command=lambda: select_all_postacie(True), primary=False).pack(side="left")
+    ui_style.button(button_frame, text="Odznacz (Postacie)", command=lambda: select_all_postacie(False), primary=False).pack(side="left", padx=6)
+    ui_style.button(button_frame, text="Zaznacz (Inne)", command=lambda: select_all_inne(True), primary=False).pack(side="left")
+    ui_style.button(button_frame, text="Odznacz (Inne)", command=lambda: select_all_inne(False), primary=False).pack(side="left", padx=6)
     confirm_button = ui_style.button(button_frame, text="Eksportuj wybrane", command=confirm, primary=True)
     confirm_button.pack(side="right")
     ui_style.button(button_frame, text="Anuluj", command=cancel, primary=False).pack(side="right", padx=6)
@@ -373,7 +456,8 @@ def show_selection_dialog(bindings, tracks, get_display_name_fn, get_binding_id_
     root.protocol("WM_DELETE_WINDOW", cancel)
 
     _dialog_log(
-        f"selection_dialog rendered face={len(face_items)} (auto) body={len(body_items)} (auto) "
+        f"selection_dialog rendered face={len(face_items)} (auto, hidden) body={len(body_items)} "
+        f"(auto, hidden) postacie={len(postacie_vars)} (collapsed, alphabetical) "
         f"inne={len(inne_vars)} (collapsed, alphabetical)",
         level="INFO",
     )

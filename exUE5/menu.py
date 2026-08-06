@@ -59,6 +59,40 @@ except ModuleNotFoundError:
 PLUGIN_VERSION = "v1.8"
 
 
+def _reload_ui_style():
+    """Odświeża w pamięci moduł exUE5.ui_style tuż przed otwarciem dialogu.
+
+    Unreal Editor trzyma jeden, długo działający proces Pythona -- moduł raz
+    zaimportowany do sys.modules NIE jest automatycznie ponownie wczytywany
+    z dysku, nawet jeśli plik .py się zmienił. Skutek: po edycji ui_style.py
+    (np. dodaniu nowej funkcji jak apply_geometry) moduły, które już wcześniej
+    zaimportowały ui_style w tej samej sesji edytora (camera_dialog.py,
+    ui_dialogs.py, selection_dialog.py, debug_console.py), dalej trzymają
+    starą wersję w pamięci i rzucają
+    "AttributeError: module 'exUE5.ui_style' has no attribute '...'" -- mimo
+    że plik na dysku jest już poprawny -- dopóki ktoś ręcznie nie zrestartuje
+    edytora.
+
+    importlib.reload() podmienia zawartość modułu W MIEJSCU (ten sam obiekt
+    modułu zostaje w sys.modules), więc wszystkie miejsca trzymające
+    referencję do tego obiektu (np. `from exUE5 import ui_style` w innych
+    plikach) od razu widzą nowe atrybuty -- bez potrzeby restartu edytora.
+    Wywoływane na starcie każdego handlera menu, więc zawsze łapie
+    najświeższą wersję pliku z dysku.
+    """
+    import importlib
+
+    module = sys.modules.get("exUE5.ui_style") or sys.modules.get("ui_style")
+    if module is None:
+        # Jeszcze nie zaimportowany w tej sesji -- pierwszy import i tak
+        # przeczyta aktualną wersję z dysku, więc nie ma czego przeładowywać.
+        return
+    try:
+        importlib.reload(module)
+    except Exception as exc:
+        _log(f"[exUE5] Nie udało się przeładować ui_style: {exc}")
+
+
 def _clear_existing_exporter_menu(menus, main_menu):
     for name in MENU_NAMES_TO_CLEAN:
         try:
@@ -102,6 +136,7 @@ def _run_camera_dialog():
         raise RuntimeError("unreal module not available")
 
     unreal.log("[exUE5] _run_camera_dialog() started")
+    _reload_ui_style()
     config = load_config()
     try:
         from exUE5.exporter import get_current_sequence
@@ -145,6 +180,7 @@ def _run_export():
     if unreal is None:
         raise RuntimeError("unreal module not available")
 
+    _reload_ui_style()
     config = load_config()
 
     unreal.log("[exUE5] Menu callback _run_export() invoked")
@@ -216,6 +252,7 @@ def _run_export():
 
 
 def _run_diagnose_export():
+    _reload_ui_style()
     try:
         diagnose_camera_export_issue()
     except Exception as exc:
@@ -223,6 +260,7 @@ def _run_diagnose_export():
 
 
 def _run_debug_console():
+    _reload_ui_style()
     try:
         open_debug_console()
     except Exception as exc:

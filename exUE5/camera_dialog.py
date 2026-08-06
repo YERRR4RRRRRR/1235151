@@ -7,12 +7,17 @@ except ModuleNotFoundError:
 def show_camera_export_dialog(camera_bindings, get_display_name_fn, default_output_path):
     import os
     import tkinter as tk
-    from tkinter import filedialog
+    from tkinter import filedialog, messagebox
 
     try:
         from exUE5 import ui_style
     except ModuleNotFoundError:
         import ui_style
+
+    try:
+        from exUE5.exporter_core import save_config
+    except ModuleNotFoundError:
+        from exporter_core import save_config
 
     try:
         from exUE5.spawnable_diagnostics import _format_binding_id
@@ -51,22 +56,29 @@ def show_camera_export_dialog(camera_bindings, get_display_name_fn, default_outp
     ui_style.apply_theme(root, title="Eksport kamer", min_size=(440, 360))
     ui_style.apply_geometry(root, 560, 460)
 
-    default_dir, default_file = os.path.split(default_output_path)
-    default_base, default_ext = os.path.splitext(default_file)
-    if not default_base:
-        default_base = "KAMERA_TRANS"
+    # Pole nazwy pliku startuje PUSTE -- wymaga wpisania nazwy przed
+    # eksportem. Rozszerzenie ".fbx" to osobna, stała etykieta obok pola
+    # (patrz niżej), więc nie da się jej zmienić ani skasować.
+    default_dir, _default_file = os.path.split(default_output_path)
 
-    file_name_var = tk.StringVar(value=default_base)
-    folder_var = tk.StringVar(value=default_dir or ".")
-    path_var = tk.StringVar(value=os.path.join(folder_var.get(), f"{file_name_var.get()}.fbx"))
+    file_name_var = tk.StringVar(value="")
+    # Folder domyślnie pusty, dopóki nie zostanie zapamiętany z poprzedniego
+    # uruchomienia (config.json -> default_output_folder). Za pierwszym
+    # razem trzeba go wybrać ręcznie.
+    folder_var = tk.StringVar(value=default_dir or "")
+    path_var = tk.StringVar(value="")
 
     def _update_path_display(*args):
-        file_name = os.path.splitext(file_name_var.get())[0]
-        folder = folder_var.get() or "."
-        path_var.set(os.path.join(folder, f"{file_name}.fbx"))
+        file_name = os.path.splitext(file_name_var.get())[0].strip()
+        display_name = f"{file_name}.fbx" if file_name else "<wpisz nazwę>.fbx"
+        display_folder = folder_var.get().strip() or "<wybierz folder>"
+        path_var.set(os.path.join(display_folder, display_name))
 
     file_name_var.trace_add("write", _update_path_display)
     folder_var.trace_add("write", _update_path_display)
+    _update_path_display()
+    file_name_var.trace_add("write", lambda *args: _update_confirm_state())
+    folder_var.trace_add("write", lambda *args: _update_confirm_state())
 
     filename_frame = ui_style.frame(root)
     filename_frame.pack(fill="x", padx=12, pady=(14, 4))
@@ -104,7 +116,9 @@ def show_camera_export_dialog(camera_bindings, get_display_name_fn, default_outp
 
     def _update_confirm_state():
         has_selection = any(var.get() for var, _, _ in cam_vars.values())
-        confirm_button.config(state="normal" if has_selection else "disabled")
+        has_name = bool(os.path.splitext(file_name_var.get())[0].strip())
+        has_folder = bool(folder_var.get().strip())
+        confirm_button.config(state="normal" if (has_selection and has_name and has_folder) else "disabled")
 
     if camera_bindings:
         sorted_bindings = sorted(camera_bindings, key=lambda b: (get_display_name_fn(b) or "").lower())
@@ -128,11 +142,28 @@ def show_camera_export_dialog(camera_bindings, get_display_name_fn, default_outp
         ).pack(fill="x", pady=(4, 0))
 
     def confirm():
+        file_name = os.path.splitext(file_name_var.get())[0].strip()
+        output_folder = folder_var.get().strip()
+
+        if not file_name:
+            messagebox.showerror("Brak nazwy pliku", "Podaj nazwę pliku przed eksportem kamer.", parent=root)
+            return
+        if not output_folder:
+            messagebox.showerror("Brak folderu", "Wybierz folder docelowy przed eksportem kamer.", parent=root)
+            return
+
         result["cancelled"] = False
-        output_folder = folder_var.get() or "."
-        file_name = os.path.splitext(file_name_var.get())[0]
         result["output_path"] = os.path.join(output_folder, f"{file_name}.fbx")
         result["camera_binding_ids"] = {bid for _, (var, _, bid) in cam_vars.items() if var.get()}
+
+        # Zapamiętaj folder w config.json, żeby przy kolejnym uruchomieniu
+        # GUI był już wypełniony automatycznie.
+        try:
+            save_config({"default_output_folder": output_folder})
+        except Exception as exc:
+            if unreal is not None:
+                unreal.log(f"[exUE5] Nie udało się zapisać folderu docelowego: {exc}")
+
         root.quit()
         root.destroy()
 
